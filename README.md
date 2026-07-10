@@ -1,81 +1,80 @@
 # Marathon Training Tracker 🏃
 
-A web app for the **SWAP 12-Week Advanced Marathon Plan**. Enter your marathon
-date and the app back-schedules all 84 days of training to end on race day —
-then shows you what to run each day and lets you journal how it went so you can
-track progress toward your goal.
+A multi-user web app for running training plans. Sign in, pick or upload a
+training plan, anchor it to the calendar — working backward from your goal race
+or forward from a start date — then see each day's workout and journal how it
+went to track your progress.
 
 ## Features
 
-- **Back-scheduled plan** — pick your race date and every workout gets a real
-  calendar date, ending on race day. The plan is written for a Sunday race, but
-  any date works; the whole schedule just shifts.
-- **Today view** — today's workout front and center, plus what's up next and a
-  live countdown to race day.
-- **Full schedule** — all 12 weeks, expandable by week, with the current week
-  highlighted and each day color-tagged (rest / easy / workout / long run / race).
-- **Training journal** — for every day, log how it went (completed / modified /
-  skipped), distance, total time (average pace is computed for you), effort
-  (RPE 1–10), a 1–5 star feel rating, and free-form notes for splits, weather,
-  fueling, etc.
-- **Progress tracking** — days-to-race, percent through the plan, workouts
+- **Accounts** — email + password sign-in; every user's plans, schedules, and
+  journals are stored server-side, so you can sign in from any device and share
+  the app with training partners.
+- **Plan library** — the SWAP 12-Week Advanced Marathon Plan is built in, and
+  you can upload your own plans as a markdown table or JSON
+  (see [docs/plan-format.md](docs/plan-format.md)). Day types
+  (rest / easy / workout / long run / race) are detected automatically.
+- **Flexible scheduling** — create any number of schedules from any plan:
+  either **work backward from a goal race** (the last plan day lands on race
+  day) or **start on a date** (day 1 is the date you pick). Each schedule keeps
+  its own journal; switch the active one in Settings.
+- **Today view** — today's workout front and center, with a race-day countdown
+  (or day-X-of-N progress for start-mode schedules).
+- **Full schedule** — every week expandable, current week highlighted, days
+  color-tagged by type with journal-status dots.
+- **Training journal** — per day: completed / modified / skipped, distance,
+  total time (average pace computed), effort (RPE 1–10), a star rating, and
+  free-form notes for splits, weather, and fueling.
+- **Progress tracking** — days to race, percent through the plan, workouts
   completed, total miles, a miles-per-week chart, and a week-by-week table.
-- **Cross-device sync** — turn on sync in Settings to get a private sync code,
-  then enter that code on your phone/other computer (Settings, or "restore" on
-  the start screen) to keep race date and journal in sync everywhere.
-- **Backup** — export/import your journal as JSON from the Settings tab.
-- Light and dark mode, mobile friendly.
+- **Cross-device sync** — changes push automatically and merge by
+  most-recent-edit per journal entry (deletions propagate too), with offline
+  support via a per-user local cache.
+- **Backup** — export/import all your data as JSON. Light and dark mode,
+  mobile friendly.
 
 ## Running it
 
-The app itself is fully static — no build step, no dependencies. A tiny
-dependency-free Node server (`server.js`) is included for hosting.
+No build step, no npm dependencies — a small Node server (`server.js`) serves
+the app and the API.
 
-- **Locally:** run `npm start` and visit `http://localhost:3000`, or just open
-  `index.html` directly in a browser.
+- **Locally:** `npm start`, then visit `http://localhost:3000`.
 - **Railway:** create a new Railway project from this GitHub repo — Railway
   detects the Node app automatically, runs `npm start`, and the server binds to
   Railway's `PORT`. Then open **Settings → Networking → Generate Domain** on the
   service to get your public URL.
-  - **For sync to survive redeploys, attach a volume:** on the service, add a
-    volume with mount path `/app/data` (the server's default data directory).
-    Alternatively mount it anywhere and set the `DATA_DIR` environment variable
-    to that path. Without a volume the app still works, but synced data is
-    reset on each deploy.
-- **GitHub Pages (alternative):** enable Pages for this branch/root in the repo
-  settings; the app works as a plain static site too (without cross-device sync,
-  which needs the server).
+  - **Attach a volume** (required for real use): accounts and training data
+    live on disk, so add a volume with mount path `/app/data` (the server's
+    default data directory), or mount it anywhere and set the `DATA_DIR`
+    environment variable to that path. Without a volume, all accounts and data
+    are wiped on each redeploy.
 
-## Where your data lives
-
-Everything (race date + journal) is stored in your browser's `localStorage` and
-works fully offline. Journal entries are keyed to plan days (e.g. "Week 5,
-Wednesday workout"), so changing the race date later shifts the calendar
-without losing any entries.
-
-With **cross-device sync** turned on, the app also mirrors your data to the
-server under your sync code. The code is never stored on the server — data
-lives under its SHA-256 hash, so the code works like a password: anyone who has
-it can read and change that training log. Use the generated codes (or something
-equally strong) and keep them private. Syncing merges by most-recent-edit per
-journal entry, and deletions propagate too, so devices converge even after
-offline edits.
-
-**Settings → Export** still gives you a JSON backup at any time.
-
-## Project layout
+## Architecture & data
 
 ```
-index.html      app shell
-css/styles.css  styles (light + dark)
-js/plan.js      the 12-week plan as structured data (84 days)
-js/app.js       scheduling, journal, rendering, chart
-server.js       dependency-free static server for hosting (Railway etc.)
-package.json    start script + Node version for Railway's auto-detection
+index.html         app shell (auth screen + tabbed app)
+css/styles.css     styles (light + dark)
+js/plan.js         the built-in SWAP plan as structured data
+js/planParser.js   markdown-table & JSON plan parsing (browser + Node)
+js/app.js          auth, schedules, journal, rendering, chart, sync
+server.js          dependency-free static server + JSON API
+plans/             example plan file (the built-in plan's source)
+docs/              plan format reference
 ```
 
-## The plan
+**API:** `POST /api/register|login|logout`, `GET /api/me`, and
+`GET|PUT /api/data` (the signed-in user's state blob). Sessions are HttpOnly
+`SameSite=Lax` cookies (90-day expiry); passwords are scrypt-hashed with
+per-user salts; auth endpoints are rate-limited. Each user's data is a JSON
+file under `DATA_DIR` — no database to manage.
 
-The SWAP 12-Week Advanced Marathon Plan's distance ranges create multiple plans
-in one: the low end of each range is for intermediate runners, the high end for
-advanced athletes with a big base.
+**Sync model:** the client caches state per user in `localStorage` (offline
+works), pulls on load/focus, and pushes ~1.5 s after every change. Merging is
+last-write-wins per item (plans, schedules, and individual journal entries each
+carry `updatedAt`); deletions are tombstones so they win merges and propagate
+to other devices.
+
+**Limitations to know about:** there's no password-reset flow (the server
+never learns usable emails for sending mail) — resetting a forgotten password
+currently means an admin editing the data directory. Fine for a small group of
+training partners; add a mail provider if you outgrow it.

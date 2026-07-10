@@ -18,40 +18,33 @@
       <button data-tab="today" class="active" role="tab" aria-selected="true">Today</button>
       <button data-tab="schedule" role="tab" aria-selected="false">Schedule</button>
       <button data-tab="progress" role="tab" aria-selected="false">Progress</button>
+      <button data-tab="plans" role="tab" aria-selected="false">Plans</button>
       <button data-tab="settings" role="tab" aria-selected="false">Settings</button>
     </nav>
   </header>
 
   <main>
-    <!-- First-run setup -->
-    <section id="setup" hidden>
-      <div class="setup-card">
-        <h2>When is your marathon?</h2>
-        <p>This app back-schedules the <strong>SWAP 12-Week Advanced Marathon Plan</strong>
-        from your race date — 84 days of training ending on race day. Each day shows the
-        planned workout, and you can journal how it went to track your progress.</p>
-        <form id="setup-form">
-          <label for="race-date-input">Marathon date</label>
-          <div class="inline-controls">
-            <input type="date" id="race-date-input" required>
-            <button type="submit" class="btn primary">Build my schedule</button>
-          </div>
-          <p id="sunday-hint" class="hint" hidden>Heads up: this plan is written for a
-          <strong>Sunday</strong> race (rest days land on Mondays). Any date works — the whole
-          plan just shifts to end on your race day.</p>
+    <!-- Login / registration -->
+    <section id="auth" hidden>
+      <div class="setup-card auth-card">
+        <h2 id="auth-title">Sign in</h2>
+        <p class="auth-blurb">Track your training: pick or upload a plan, schedule it around
+        your goal race, and journal every workout.</p>
+        <form id="auth-form">
+          <label>Email
+            <input type="email" name="email" required autocomplete="email" placeholder="you@example.com">
+          </label>
+          <label>Password
+            <input type="password" name="password" required minlength="8"
+                   autocomplete="current-password" placeholder="at least 8 characters">
+          </label>
+          <p id="auth-error" class="sync-error" hidden></p>
+          <button type="submit" class="btn primary" id="auth-submit">Sign in</button>
         </form>
-        <p class="hint">The distance ranges create multiple plans in one — low end of the range
-        for intermediate runners, high end for advanced athletes with a big base.</p>
-        <details id="restore-wrap" class="restore-details">
-          <summary>Already using this app on another device?</summary>
-          <p class="hint">Enter the sync code from your other device (Settings → Cross-device sync)
-          to restore your schedule and journal here.</p>
-          <div class="inline-controls">
-            <input type="text" id="restore-code-input" placeholder="sync code" autocomplete="off">
-            <button type="button" id="restore-sync" class="btn">Restore from sync</button>
-          </div>
-          <p id="restore-error" class="hint sync-error" hidden></p>
-        </details>
+        <p class="auth-switch">
+          <span id="auth-switch-label">New here?</span>
+          <a href="#" id="auth-switch-link">Create an account</a>
+        </p>
       </div>
     </section>
 
@@ -60,6 +53,7 @@
       <section id="tab-today" class="tab-panel"></section>
       <section id="tab-schedule" class="tab-panel" hidden></section>
       <section id="tab-progress" class="tab-panel" hidden></section>
+      <section id="tab-plans" class="tab-panel" hidden></section>
       <section id="tab-settings" class="tab-panel" hidden></section>
     </div>
   </main>
@@ -71,10 +65,11 @@
   </dialog>
 
   <footer class="app-footer">
-    <p>Plan: SWAP 12-Week Advanced Marathon Plan · Data stays in your browser</p>
+    <p>Marathon Trainer · your data syncs to your account</p>
   </footer>
 
   <script src="js/plan.js"></script>
+  <script src="js/planParser.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

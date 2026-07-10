@@ -1,11 +1,20 @@
 /* Marathon Training Tracker — app logic.
- * State (race date + journal entries) lives in localStorage. Journal entries
- * are keyed by plan-day index (0–83), so they stay attached to the correct
- * plan day even if the race date is changed later.
+ *
+ * Users sign in (cookie session against /api/*); each user's data — uploaded
+ * plans, schedules, and journals — is one state blob synced through
+ * /api/data and cached per-user in localStorage for offline use.
+ *
+ * A "schedule" applies a plan to the calendar: mode "race" back-schedules so
+ * the last plan day lands on the anchor date; mode "start" runs forward from
+ * it. Journal entries are keyed by schedule id + plan-day index, with
+ * updatedAt timestamps for merging and {deleted:true} tombstones so edits and
+ * deletions converge across devices.
  */
 "use strict";
 
-const STORAGE_KEY = "marathonTracker.v1";
+const LAST_USER_KEY = "marathonTracker.lastUser";
+const LEGACY_STATE_KEY = "marathonTracker.v1";
+const LEGACY_SYNC_KEY = "marathonTracker.sync.v1";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const TYPE_LABELS = {
@@ -16,145 +25,83 @@ const TYPE_LABELS = {
   race: "Race day",
 };
 
-let state = loadState();
+const BUILTIN_PLAN = {
+  id: "builtin-swap12",
+  name: "SWAP 12-Week Advanced Marathon Plan",
+  builtin: true,
+  htmlDetails: true,
+  dayHeaders: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+  weeks: PLAN_WEEKS,
+};
+
+let user = null;          // {id, email} when signed in
+let offline = false;      // true when running from cache without a server
+let authMode = "login";
 let activeTab = "today";
-let openDayIndex = null;
+let pendingPlanId = null; // preselect in the new-schedule form
+let state = emptyState();
 
-/* ---------- persistence ---------- */
+function emptyState() {
+  return { plans: {}, schedules: {}, journal: {}, activeScheduleId: null, activeUpdatedAt: null };
+}
 
-function loadState() {
+/* ---------- persistence (per-user local cache) ---------- */
+
+function cacheKey() {
+  return `marathonTracker.u.${user.id}`;
+}
+
+function loadCache() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        return {
-          raceDate: parsed.raceDate || null,
-          raceDateUpdatedAt: parsed.raceDateUpdatedAt || null,
-          journal: parsed.journal || {},
-        };
-      }
+    const parsed = JSON.parse(localStorage.getItem(cacheKey()));
+    if (parsed && typeof parsed === "object") {
+      return { ...emptyState(), ...parsed };
     }
-  } catch (e) {
-    console.warn("Could not load saved data:", e);
-  }
-  return { raceDate: null, raceDateUpdatedAt: null, journal: {} };
+  } catch { /* fall through */ }
+  return null;
 }
 
 function saveState(triggerSync = true) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(cacheKey(), JSON.stringify(state));
   if (triggerSync) schedulePush();
 }
 
-/* ---------- cross-device sync ----------
- * State syncs through the app's server (/api/sync) under a user-chosen sync
- * code. Merging is last-write-wins per journal entry via each entry's
- * updatedAt; deletions are kept as {deleted:true} tombstones so they
- * propagate. The race date carries its own raceDateUpdatedAt.
- */
-
-const SYNC_CFG_KEY = "marathonTracker.sync.v1";
-let syncCfg = loadSyncCfg();
-let syncStatus = { error: null };
-let syncInProgress = false;
-let syncTimer = null;
-
-function loadSyncCfg() {
+function loadLastUser() {
   try {
-    return JSON.parse(localStorage.getItem(SYNC_CFG_KEY)) || {};
+    return JSON.parse(localStorage.getItem(LAST_USER_KEY));
   } catch {
-    return {};
+    return null;
   }
 }
 
-function saveSyncCfg() {
-  localStorage.setItem(SYNC_CFG_KEY, JSON.stringify(syncCfg));
-}
-
-function syncAvailable() {
-  return location.protocol !== "file:";
-}
-
-function generateSyncCode() {
-  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no lookalikes
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]);
-  return [0, 4, 8, 12].map((k) => chars.slice(k, k + 4).join("")).join("-");
-}
-
-async function syncFetch(method, body) {
-  const res = await fetch("/api/sync", {
-    method,
-    headers: {
-      "X-Sync-Code": syncCfg.code,
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`sync server error (${res.status})`);
-  return res.json();
-}
-
-function mergeStates(local, remote) {
-  const ts = (v) => (v ? Date.parse(v) || 0 : 0);
-  const merged = {
-    raceDate: local.raceDate,
-    raceDateUpdatedAt: local.raceDateUpdatedAt,
-    journal: {},
-  };
-  if (
-    (remote.raceDate || remote.raceDateUpdatedAt) &&
-    (!local.raceDate || ts(remote.raceDateUpdatedAt) > ts(local.raceDateUpdatedAt))
-  ) {
-    merged.raceDate = remote.raceDate;
-    merged.raceDateUpdatedAt = remote.raceDateUpdatedAt;
-  }
-  const keys = new Set([
-    ...Object.keys(local.journal || {}),
-    ...Object.keys(remote.journal || {}),
-  ]);
-  for (const k of keys) {
-    const a = (local.journal || {})[k];
-    const b = (remote.journal || {})[k];
-    merged.journal[k] = ts(b && b.updatedAt) > ts(a && a.updatedAt) ? b : (a ?? b);
-  }
-  return merged;
-}
-
-async function doSync() {
-  if (!syncCfg.enabled || syncInProgress || !syncAvailable()) return;
-  syncInProgress = true;
+/* Import data from the pre-accounts version of this app (single plan,
+ * race date + journal in localStorage) as a schedule on first login. */
+function migrateLegacyState() {
+  let legacy = null;
   try {
-    const remote = await syncFetch("GET");
-    if (remote && remote.state) {
-      state = mergeStates(state, remote.state);
-      saveState(false);
+    legacy = JSON.parse(localStorage.getItem(LEGACY_STATE_KEY));
+  } catch { /* ignore */ }
+  if (legacy && legacy.raceDate) {
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    state.schedules[id] = {
+      id,
+      name: "My marathon (imported)",
+      planId: BUILTIN_PLAN.id,
+      mode: "race",
+      anchorDate: legacy.raceDate,
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.journal[id] = legacy.journal || {};
+    if (!state.activeScheduleId) {
+      state.activeScheduleId = id;
+      state.activeUpdatedAt = now;
     }
-    // don't create a server record from an empty local state (e.g. a typo'd
-    // code during restore)
-    if (state.raceDate || Object.keys(state.journal).length) {
-      await syncFetch("PUT", { state });
-    }
-    syncCfg.lastSync = new Date().toISOString();
-    syncStatus.error = null;
-    saveSyncCfg();
-  } catch (e) {
-    syncStatus.error = e.message;
-  } finally {
-    syncInProgress = false;
+    saveState();
   }
-}
-
-function schedulePush() {
-  if (!syncCfg.enabled || syncInProgress || !syncAvailable()) return;
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(async () => {
-    await doSync();
-    renderCountdownChip();
-    if (activeTab === "settings" && !$("#day-modal").open) render();
-  }, 1500);
+  localStorage.removeItem(LEGACY_STATE_KEY);
+  localStorage.removeItem(LEGACY_SYNC_KEY);
 }
 
 /* ---------- date helpers (noon-anchored to dodge DST edges) ---------- */
@@ -180,18 +127,6 @@ function todayNoon() {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
 }
 
-function startDate() {
-  return addDays(parseISODate(state.raceDate), -RACE_DAY_INDEX);
-}
-
-function dateForIndex(i) {
-  return addDays(startDate(), i);
-}
-
-function todayIndex() {
-  return Math.round((todayNoon() - startDate()) / MS_PER_DAY);
-}
-
 const FMT_LONG = new Intl.DateTimeFormat(undefined, {
   weekday: "long", month: "long", day: "numeric", year: "numeric",
 });
@@ -200,16 +135,67 @@ const FMT_MED = new Intl.DateTimeFormat(undefined, {
 });
 const FMT_SHORT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
-/* ---------- journal helpers ---------- */
+/* ---------- plans & schedules ---------- */
+
+function livePlans() {
+  return Object.values(state.plans).filter((p) => !p.deleted);
+}
+
+function liveSchedules() {
+  return Object.values(state.schedules).filter((s) => !s.deleted)
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+}
+
+function getPlan(planId) {
+  if (planId === BUILTIN_PLAN.id) return BUILTIN_PLAN;
+  const p = state.plans[planId];
+  return p && !p.deleted ? p : null;
+}
+
+function activeSchedule() {
+  const s = state.schedules[state.activeScheduleId];
+  return s && !s.deleted && getPlan(s.planId) ? s : null;
+}
+
+/* Resolved calendar info for a schedule. */
+function schedInfo(sched) {
+  const plan = getPlan(sched.planId);
+  if (!plan) return null;
+  const days = plan.weeks.flatMap((w, wi) => w.days.map((d) => ({ week: wi + 1, ...d })));
+  const len = days.length;
+  const start = sched.mode === "start"
+    ? parseISODate(sched.anchorDate)
+    : addDays(parseISODate(sched.anchorDate), -(len - 1));
+  return {
+    sched, plan, days, len, start,
+    end: addDays(start, len - 1),
+    dpw: plan.weeks[0].days.length,
+    weeksCount: plan.weeks.length,
+    todayIdx: Math.round((todayNoon() - start) / MS_PER_DAY),
+    isRaceGoal: sched.mode === "race",
+  };
+}
+
+function activeInfo() {
+  const sched = activeSchedule();
+  return sched ? schedInfo(sched) : null;
+}
+
+/* ---------- journal ---------- */
 
 function entryFor(i) {
-  const e = state.journal[i];
-  return e && !e.deleted ? e : null; // deleted = sync tombstone
+  const j = state.journal[state.activeScheduleId];
+  const e = j && j[i];
+  return e && !e.deleted ? e : null;
+}
+
+function setEntry(i, entry) {
+  (state.journal[state.activeScheduleId] ||= {})[i] = entry;
 }
 
 function deleteEntry(i) {
   // tombstone instead of removal, so the deletion syncs to other devices
-  state.journal[i] = { deleted: true, updatedAt: new Date().toISOString() };
+  setEntry(i, { deleted: true, updatedAt: new Date().toISOString() });
 }
 
 function parseDuration(text) {
@@ -239,6 +225,155 @@ function paceFor(entry) {
   return formatPace(secs / entry.distance);
 }
 
+/* ---------- auth ---------- */
+
+async function authRequest(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty body */ }
+  return { ok: res.ok, status: res.status, data };
+}
+
+const AUTH_ERRORS = {
+  invalid_email: "That doesn't look like an email address.",
+  password_too_short: "Passwords need at least 8 characters.",
+  email_taken: "There's already an account with that email — try signing in.",
+  invalid_credentials: "Wrong email or password.",
+  too_many_attempts: "Too many attempts — wait a few minutes and try again.",
+};
+
+async function handleAuthSubmit(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const errEl = $("#auth-error");
+  errEl.hidden = true;
+  const submit = $("#auth-submit");
+  submit.disabled = true;
+  try {
+    const { ok, data } = await authRequest(
+      authMode === "login" ? "/api/login" : "/api/register",
+      { email: form.email.value, password: form.password.value }
+    );
+    if (!ok) {
+      errEl.textContent = AUTH_ERRORS[data.error] || "Something went wrong — please try again.";
+      errEl.hidden = false;
+      return;
+    }
+    user = data.user;
+    offline = false;
+    localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
+    state = loadCache() || emptyState();
+    migrateLegacyState();
+    activeTab = "today";
+    render();
+    await doSync();
+    render();
+  } catch {
+    errEl.textContent = "Can't reach the server — check your connection.";
+    errEl.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function logout() {
+  try { await authRequest("/api/logout"); } catch { /* best effort */ }
+  user = null;
+  localStorage.removeItem(LAST_USER_KEY);
+  authMode = "login";
+  render();
+}
+
+/* ---------- sync ---------- */
+
+let syncStatus = { error: null, lastSync: null };
+let syncInProgress = false;
+let syncTimer = null;
+
+function ts(v) {
+  return v ? Date.parse(v) || 0 : 0;
+}
+
+function mergeById(localMap = {}, remoteMap = {}) {
+  const out = {};
+  for (const k of new Set([...Object.keys(localMap), ...Object.keys(remoteMap)])) {
+    const a = localMap[k];
+    const b = remoteMap[k];
+    out[k] = ts(b && b.updatedAt) > ts(a && a.updatedAt) ? b : (a ?? b);
+  }
+  return out;
+}
+
+function mergeStates(local, remote) {
+  const merged = {
+    plans: mergeById(local.plans, remote.plans),
+    schedules: mergeById(local.schedules, remote.schedules),
+    journal: {},
+    activeScheduleId: local.activeScheduleId,
+    activeUpdatedAt: local.activeUpdatedAt,
+  };
+  const schedIds = new Set([
+    ...Object.keys(local.journal || {}),
+    ...Object.keys(remote.journal || {}),
+  ]);
+  for (const sid of schedIds) {
+    merged.journal[sid] = mergeById((local.journal || {})[sid], (remote.journal || {})[sid]);
+  }
+  if (ts(remote.activeUpdatedAt) > ts(local.activeUpdatedAt)) {
+    merged.activeScheduleId = remote.activeScheduleId;
+    merged.activeUpdatedAt = remote.activeUpdatedAt;
+  }
+  return merged;
+}
+
+async function doSync() {
+  if (!user || syncInProgress) return;
+  syncInProgress = true;
+  try {
+    const getRes = await fetch("/api/data");
+    if (getRes.status === 401) throw { loggedOut: true };
+    if (!getRes.ok) throw new Error(`server error (${getRes.status})`);
+    const remote = await getRes.json();
+    if (remote && remote.state) {
+      state = mergeStates(state, remote.state);
+      saveState(false);
+    }
+    const putRes = await fetch("/api/data", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+    if (putRes.status === 401) throw { loggedOut: true };
+    if (!putRes.ok) throw new Error(`server error (${putRes.status})`);
+    syncStatus = { error: null, lastSync: new Date().toISOString() };
+    offline = false;
+  } catch (e) {
+    if (e && e.loggedOut) {
+      user = null;
+      syncInProgress = false;
+      render();
+      return;
+    }
+    syncStatus.error = e && e.message ? e.message : "network unreachable";
+    offline = true;
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+function schedulePush() {
+  if (!user) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    await doSync();
+    renderCountdownChip();
+  }, 1500);
+}
+
 /* ---------- rendering ---------- */
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -250,12 +385,17 @@ function esc(s) {
   return div.innerHTML;
 }
 
+function detailHTML(plan, text) {
+  return plan.htmlDetails ? text : esc(text);
+}
+
 function render() {
-  const hasDate = Boolean(state.raceDate);
-  $("#setup").hidden = hasDate;
-  $("#app-main").hidden = !hasDate;
-  $("#tabs").hidden = !hasDate;
-  if (!hasDate) {
+  const signedIn = Boolean(user);
+  $("#auth").hidden = signedIn;
+  $("#app-main").hidden = !signedIn;
+  $("#tabs").hidden = !signedIn;
+  if (!signedIn) {
+    renderAuth();
     renderCountdownChip();
     return;
   }
@@ -267,22 +407,141 @@ function render() {
   });
   $$(".tab-panel").forEach((p) => (p.hidden = p.id !== `tab-${activeTab}`));
   if (activeTab === "today") renderToday();
-  if (activeTab === "schedule") renderSchedule();
+  if (activeTab === "schedule") renderScheduleTab();
   if (activeTab === "progress") renderProgress();
+  if (activeTab === "plans") renderPlans();
   if (activeTab === "settings") renderSettings();
+}
+
+function renderAuth() {
+  const isLogin = authMode === "login";
+  $("#auth-title").textContent = isLogin ? "Sign in" : "Create your account";
+  $("#auth-submit").textContent = isLogin ? "Sign in" : "Create account";
+  $("#auth-switch-label").textContent = isLogin ? "New here?" : "Already have an account?";
+  $("#auth-switch-link").textContent = isLogin ? "Create an account" : "Sign in";
+  $("#auth-form").password.autocomplete = isLogin ? "current-password" : "new-password";
 }
 
 function renderCountdownChip() {
   const chip = $("#countdown-chip");
-  if (!state.raceDate) {
+  const info = user && activeInfo();
+  if (!info) {
     chip.hidden = true;
     return;
   }
   chip.hidden = false;
-  const days = RACE_DAY_INDEX - todayIndex();
-  if (days > 0) chip.textContent = `🏁 ${days} day${days === 1 ? "" : "s"} to race day`;
-  else if (days === 0) chip.textContent = "🏁 RACE DAY!";
-  else chip.textContent = "🏁 Race complete";
+  const remaining = info.len - 1 - info.todayIdx;
+  if (info.isRaceGoal) {
+    if (remaining > 0) chip.textContent = `🏁 ${remaining} day${remaining === 1 ? "" : "s"} to race day`;
+    else if (remaining === 0) chip.textContent = "🏁 RACE DAY!";
+    else chip.textContent = "🏁 Race complete";
+  } else {
+    if (info.todayIdx < 0) chip.textContent = `📅 starts ${FMT_SHORT.format(info.start)}`;
+    else if (info.todayIdx >= info.len) chip.textContent = "✅ Plan complete";
+    else chip.textContent = `📅 Day ${info.todayIdx + 1} of ${info.len}`;
+  }
+}
+
+/* ----- onboarding / new-schedule form ----- */
+
+function planOptionsHTML(selectedId) {
+  const options = [BUILTIN_PLAN, ...livePlans()];
+  return options.map((p) => {
+    const days = p.weeks.reduce((s, w) => s + w.days.length, 0);
+    return `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>
+      ${p.name} (${p.weeks.length} wk / ${days} days)</option>`;
+  }).join("");
+}
+
+function scheduleFormHTML() {
+  return `
+    <form class="schedule-form">
+      <label>Training plan
+        <select name="planId">${planOptionsHTML(pendingPlanId)}</select>
+      </label>
+      <label>Schedule name <span class="hint-inline">(optional)</span>
+        <input type="text" name="name" maxlength="60" placeholder="e.g. Chicago Marathon 2026">
+      </label>
+      <fieldset class="mode-fieldset">
+        <legend>How should the plan land on the calendar?</legend>
+        <label class="radio-row">
+          <input type="radio" name="mode" value="race" checked>
+          <span><strong>Work backward from my goal race</strong><br>
+          <span class="hint">The last day of the plan lands on race day.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="mode" value="start">
+          <span><strong>Start on a date</strong><br>
+          <span class="hint">Day 1 is the date you pick (today by default).</span></span>
+        </label>
+      </fieldset>
+      <label><span class="anchor-label">Race date</span>
+        <input type="date" name="anchorDate" required>
+      </label>
+      <p class="hint anchor-preview"></p>
+      <button type="submit" class="btn primary">Create schedule</button>
+    </form>`;
+}
+
+function wireScheduleForm(container) {
+  const form = $(".schedule-form", container);
+  const updateLabels = () => {
+    const isRace = form.mode.value === "race";
+    $(".anchor-label", form).textContent = isRace ? "Race date" : "First training day";
+    if (!form.anchorDate.value) {
+      form.anchorDate.value = toISODate(todayNoon());
+    }
+    const plan = getPlan(form.planId.value);
+    if (plan && form.anchorDate.value) {
+      const days = plan.weeks.reduce((s, w) => s + w.days.length, 0);
+      const anchor = parseISODate(form.anchorDate.value);
+      const start = isRace ? addDays(anchor, -(days - 1)) : anchor;
+      const end = isRace ? anchor : addDays(anchor, days - 1);
+      $(".anchor-preview", form).textContent =
+        `${plan.weeks.length} weeks: ${FMT_MED.format(start)} → ${FMT_MED.format(end)}`;
+    }
+  };
+  form.addEventListener("input", updateLabels);
+  updateLabels();
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const plan = getPlan(form.planId.value);
+    if (!plan || !form.anchorDate.value) return;
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    state.schedules[id] = {
+      id,
+      name: form.name.value.trim() || plan.name,
+      planId: plan.id,
+      mode: form.mode.value,
+      anchorDate: form.anchorDate.value,
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.activeScheduleId = id;
+    state.activeUpdatedAt = now;
+    pendingPlanId = null;
+    saveState();
+    activeTab = "today";
+    render();
+  });
+}
+
+function renderOnboarding(el, message) {
+  el.innerHTML = `
+    <div class="setup-card">
+      <h2>${message || "Set up your training schedule"}</h2>
+      <p>Pick a plan and anchor it to the calendar — either working backward from your
+      goal race, or starting today. You can upload more plans in the
+      <a href="#" class="goto-plans">Plans tab</a>.</p>
+      ${scheduleFormHTML()}
+    </div>`;
+  wireScheduleForm(el);
+  $(".goto-plans", el).addEventListener("click", (ev) => {
+    ev.preventDefault();
+    activeTab = "plans";
+    render();
+  });
 }
 
 /* ----- Today tab ----- */
@@ -294,9 +553,9 @@ function statusBadge(entry) {
   return `<span class="status-badge ${cls}">${label}</span>`;
 }
 
-function dayCard(i, { heading } = {}) {
-  const day = PLAN_DAYS[i];
-  const date = dateForIndex(i);
+function dayCard(info, i, { heading } = {}) {
+  const day = info.days[i];
+  const date = addDays(info.start, i);
   const entry = entryFor(i);
   const pace = paceFor(entry);
   const loggedBits = [];
@@ -305,14 +564,14 @@ function dayCard(i, { heading } = {}) {
   if (pace) loggedBits.push(pace);
   return `
     <article class="day-card type-${day.type}" data-day="${i}" tabindex="0" role="button"
-             aria-label="Open day ${i + 1}, ${esc(day.title)}">
+             aria-label="Open day ${i + 1}">
       ${heading ? `<div class="card-heading">${esc(heading)}</div>` : ""}
       <div class="card-meta">
         <span class="type-tag type-tag-${day.type}">${TYPE_LABELS[day.type]}</span>
-        <span class="card-date">${FMT_MED.format(date)} · Week ${day.week} · Day ${i + 1} of ${TOTAL_DAYS}</span>
+        <span class="card-date">${FMT_MED.format(date)} · Week ${day.week} · Day ${i + 1} of ${info.len}</span>
       </div>
-      <h3 class="card-title">${esc(day.title)}</h3>
-      <p class="card-detail">${day.details[0]}</p>
+      <h3 class="card-title">${day.title}</h3>
+      <p class="card-detail">${detailHTML(info.plan, day.details[0])}</p>
       <div class="card-footer">
         ${statusBadge(entry)}
         ${loggedBits.length ? `<span class="logged-bits">${esc(loggedBits.join(" · "))}</span>` : ""}
@@ -323,29 +582,32 @@ function dayCard(i, { heading } = {}) {
 
 function renderToday() {
   const el = $("#tab-today");
-  const ti = todayIndex();
-  const race = parseISODate(state.raceDate);
+  const info = activeInfo();
+  if (!info) return renderOnboarding(el);
 
+  const ti = info.todayIdx;
   if (ti < 0) {
     el.innerHTML = `
       <div class="notice">
-        <h2>Training starts ${FMT_LONG.format(startDate())}</h2>
-        <p>That's <strong>${-ti} day${ti === -1 ? "" : "s"}</strong> from now. Your marathon is
-        ${FMT_LONG.format(race)}. Here's Day 1 so you know what's coming:</p>
+        <h2>Training starts ${FMT_LONG.format(info.start)}</h2>
+        <p>That's <strong>${-ti} day${ti === -1 ? "" : "s"}</strong> from now
+        (${esc(info.sched.name)}). Here's Day 1 so you know what's coming:</p>
       </div>
-      ${dayCard(0, { heading: "First day of the plan" })}`;
-  } else if (ti > RACE_DAY_INDEX) {
+      ${dayCard(info, 0, { heading: "First day of the plan" })}`;
+  } else if (ti >= info.len) {
     el.innerHTML = `
       <div class="notice">
-        <h2>🎉 You did it!</h2>
-        <p>Your marathon was ${FMT_LONG.format(race)}. Congratulations on the training block —
-        your journal and progress are saved below in the Schedule and Progress tabs.</p>
+        <h2>🎉 Plan complete!</h2>
+        <p><strong>${esc(info.sched.name)}</strong> ended ${FMT_LONG.format(info.end)}.
+        Your journal is saved in the Schedule and Progress tabs, and you can set up the
+        next block from Settings → New schedule.</p>
       </div>
-      ${dayCard(RACE_DAY_INDEX, { heading: "Race day" })}`;
+      ${dayCard(info, info.len - 1, { heading: "Final day" })}`;
   } else {
-    const parts = [dayCard(ti, { heading: ti === RACE_DAY_INDEX ? "IT'S RACE DAY" : "Today's workout" })];
-    if (ti + 1 <= RACE_DAY_INDEX) {
-      parts.push(`<h2 class="section-label">Up next</h2>`, dayCard(ti + 1));
+    const isRaceDay = info.days[ti].type === "race";
+    const parts = [dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
+    if (ti + 1 < info.len) {
+      parts.push(`<h2 class="section-label">Up next</h2>`, dayCard(info, ti + 1));
     }
     el.innerHTML = parts.join("");
   }
@@ -353,16 +615,18 @@ function renderToday() {
 
 /* ----- Schedule tab ----- */
 
-function renderSchedule() {
+function renderScheduleTab() {
   const el = $("#tab-schedule");
-  const ti = todayIndex();
-  const html = PLAN_WEEKS.map((w) => {
-    const firstIdx = (w.week - 1) * 7;
-    const range = `${FMT_SHORT.format(dateForIndex(firstIdx))} – ${FMT_SHORT.format(dateForIndex(firstIdx + 6))}`;
-    const isCurrent = ti >= firstIdx && ti < firstIdx + 7;
-    const rows = w.days.map((day, di) => {
-      const i = firstIdx + di;
-      const date = dateForIndex(i);
+  const info = activeInfo();
+  if (!info) return renderOnboarding(el);
+
+  const ti = info.todayIdx;
+  let idx = 0;
+  const html = info.plan.weeks.map((w, wi) => {
+    const firstIdx = idx;
+    const rows = w.days.map((day) => {
+      const i = idx++;
+      const date = addDays(info.start, i);
       const entry = entryFor(i);
       const isToday = i === ti;
       const dot = entry && entry.status
@@ -370,23 +634,29 @@ function renderSchedule() {
         : `<span class="dot dot-none"></span>`;
       return `
         <li class="sched-row ${isToday ? "is-today" : ""} ${i < ti ? "is-past" : ""}"
-            data-day="${i}" tabindex="0" role="button"
-            aria-label="Open ${FMT_MED.format(date)}, ${esc(day.title)}">
+            data-day="${i}" tabindex="0" role="button" aria-label="Open ${FMT_MED.format(date)}">
           ${dot}
           <span class="sched-date">${FMT_MED.format(date)}${isToday ? ' <span class="today-pill">Today</span>' : ""}</span>
           <span class="type-tag type-tag-${day.type}">${TYPE_LABELS[day.type]}</span>
-          <span class="sched-title">${esc(day.title)}</span>
+          <span class="sched-title">${day.title}</span>
         </li>`;
     }).join("");
+    const lastIdx = idx - 1;
+    const range = `${FMT_SHORT.format(addDays(info.start, firstIdx))} – ${FMT_SHORT.format(addDays(info.start, lastIdx))}`;
+    const isCurrent = ti >= firstIdx && ti <= lastIdx;
     return `
-      <details class="week-block ${isCurrent ? "is-current" : ""}" ${isCurrent ? "open" : ""} id="week-${w.week}">
-        <summary><strong>Week ${w.week}</strong> <span class="week-range">${range}</span>
+      <details class="week-block ${isCurrent ? "is-current" : ""}" ${isCurrent ? "open" : ""} id="week-${wi + 1}">
+        <summary><strong>Week ${wi + 1}</strong> <span class="week-range">${range}</span>
           ${isCurrent ? '<span class="today-pill">Current</span>' : ""}</summary>
         <ul class="sched-list">${rows}</ul>
       </details>`;
   }).join("");
-  el.innerHTML = `<p class="hint">Click any day to see the full workout and write your journal entry.
-    Legend: <span class="dot dot-completed"></span> completed · <span class="dot dot-modified"></span> modified ·
+
+  el.innerHTML = `
+    <p class="hint"><strong>${esc(info.sched.name)}</strong> — ${esc(info.plan.name)}.
+    Click any day to see the full workout and write your journal entry.
+    Legend: <span class="dot dot-completed"></span> completed ·
+    <span class="dot dot-modified"></span> modified ·
     <span class="dot dot-skipped"></span> skipped</p>${html}`;
   const current = $(".week-block.is-current", el);
   if (current) current.scrollIntoView({ block: "nearest" });
@@ -394,53 +664,61 @@ function renderSchedule() {
 
 /* ----- Progress tab ----- */
 
-function weeklyTotals() {
-  return PLAN_WEEKS.map((w) => {
-    const firstIdx = (w.week - 1) * 7;
+function weeklyTotals(info) {
+  let idx = 0;
+  return info.plan.weeks.map((w, wi) => {
+    const firstIdx = idx;
     let miles = 0, runs = 0, logged = 0;
-    for (let di = 0; di < 7; di++) {
-      const e = entryFor(firstIdx + di);
+    for (const _day of w.days) {
+      const e = entryFor(idx++);
       if (e && e.status) logged++;
       if (e && (e.status === "completed" || e.status === "modified") && e.distance) {
         miles += Number(e.distance);
         runs++;
       }
     }
-    return { week: w.week, firstIdx, miles: Math.round(miles * 10) / 10, runs, logged };
+    return {
+      week: wi + 1, firstIdx, lastIdx: idx - 1,
+      miles: Math.round(miles * 10) / 10, runs, logged, dayCount: w.days.length,
+    };
   });
 }
 
 function renderProgress() {
   const el = $("#tab-progress");
-  const ti = todayIndex();
-  const totals = weeklyTotals();
-  const totalMiles = Math.round(totals.reduce((s, t) => s + t.miles, 0) * 10) / 10;
-  const totalLogged = Object.values(state.journal).filter((e) => e && e.status).length;
-  const completed = Object.values(state.journal)
-    .filter((e) => e && (e.status === "completed" || e.status === "modified")).length;
-  const daysElapsed = Math.max(0, Math.min(ti + 1, TOTAL_DAYS));
-  const pct = Math.round((daysElapsed / TOTAL_DAYS) * 100);
-  const daysToRace = Math.max(0, RACE_DAY_INDEX - ti);
+  const info = activeInfo();
+  if (!info) return renderOnboarding(el);
 
-  const tiles = `
-    <div class="stat-row">
-      <div class="stat-tile"><div class="stat-value">${daysToRace}</div><div class="stat-label">days to race</div></div>
-      <div class="stat-tile"><div class="stat-value">${pct}%</div><div class="stat-label">through the plan</div></div>
-      <div class="stat-tile"><div class="stat-value">${completed}</div><div class="stat-label">workouts completed</div></div>
-      <div class="stat-tile"><div class="stat-value">${totalMiles}</div><div class="stat-label">miles logged</div></div>
-    </div>`;
+  const ti = info.todayIdx;
+  const totals = weeklyTotals(info);
+  const totalMiles = Math.round(totals.reduce((s, t) => s + t.miles, 0) * 10) / 10;
+  const journal = state.journal[state.activeScheduleId] || {};
+  const completed = Object.values(journal)
+    .filter((e) => e && !e.deleted && (e.status === "completed" || e.status === "modified")).length;
+  const daysElapsed = Math.max(0, Math.min(ti + 1, info.len));
+  const pct = Math.round((daysElapsed / info.len) * 100);
+  const remaining = Math.max(0, info.len - 1 - ti);
+
+  const firstTile = info.isRaceGoal
+    ? `<div class="stat-tile"><div class="stat-value">${remaining}</div><div class="stat-label">days to race</div></div>`
+    : `<div class="stat-tile"><div class="stat-value">${remaining}</div><div class="stat-label">days left</div></div>`;
 
   const tableRows = totals.map((t) => {
-    const range = `${FMT_SHORT.format(dateForIndex(t.firstIdx))} – ${FMT_SHORT.format(dateForIndex(t.firstIdx + 6))}`;
+    const range = `${FMT_SHORT.format(addDays(info.start, t.firstIdx))} – ${FMT_SHORT.format(addDays(info.start, t.lastIdx))}`;
     return `<tr><td>Week ${t.week}</td><td>${range}</td><td class="num">${t.miles || "—"}</td>
-      <td class="num">${t.runs || "—"}</td><td class="num">${t.logged}/7</td></tr>`;
+      <td class="num">${t.runs || "—"}</td><td class="num">${t.logged}/${t.dayCount}</td></tr>`;
   }).join("");
 
   el.innerHTML = `
-    ${tiles}
+    <div class="stat-row">
+      ${firstTile}
+      <div class="stat-tile"><div class="stat-value">${pct}%</div><div class="stat-label">through the plan</div></div>
+      <div class="stat-tile"><div class="stat-value">${completed}</div><div class="stat-label">workouts completed</div></div>
+      <div class="stat-tile"><div class="stat-value">${totalMiles}</div><div class="stat-label">miles logged</div></div>
+    </div>
     <div class="chart-card viz-root">
       <h2 class="chart-title">Miles logged per week</h2>
-      <p class="chart-sub">Distances from journal entries marked completed or modified.</p>
+      <p class="chart-sub">${esc(info.sched.name)} — distances from journal entries marked completed or modified.</p>
       <div id="mileage-chart"></div>
       <div id="chart-tooltip" class="chart-tooltip" hidden></div>
     </div>
@@ -452,23 +730,22 @@ function renderProgress() {
       </table></div>
     </div>`;
 
-  drawMileageChart(totals);
+  drawMileageChart(info, totals);
 }
 
-function drawMileageChart(totals) {
+function drawMileageChart(info, totals) {
   const container = $("#mileage-chart");
   const W = 720, H = 260;
   const margin = { top: 12, right: 12, bottom: 28, left: 36 };
   const iw = W - margin.left - margin.right;
   const ih = H - margin.top - margin.bottom;
   const maxMiles = Math.max(10, ...totals.map((t) => t.miles));
-  // nice ceiling: round up to a multiple of 10
   const yMax = Math.ceil(maxMiles / 10) * 10;
   const ticks = [0, yMax / 2, yMax];
   const n = totals.length;
   const slot = iw / n;
   const barW = Math.min(34, slot * 0.6);
-  const currentWeek = Math.floor(todayIndex() / 7) + 1;
+  const currentWeek = totals.find((t) => info.todayIdx >= t.firstIdx && info.todayIdx <= t.lastIdx);
 
   const y = (v) => margin.top + ih - (v / yMax) * ih;
   const grid = ticks.map((t) => `
@@ -481,15 +758,17 @@ function drawMileageChart(totals) {
     const top = y(t.miles);
     const h = margin.top + ih - top;
     const r = Math.min(4, h);
-    // bar with rounded top corners only, anchored at the baseline
     const bar = h > 0
       ? `<path class="bar" d="M${x},${margin.top + ih} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${margin.top + ih} Z"/>`
       : "";
-    const isCurrent = t.week === currentWeek;
+    const isCurrent = currentWeek && t.week === currentWeek.week;
+    const label = n <= 20 || t.week === 1 || t.week === n || isCurrent || t.week % 5 === 0
+      ? `<text x="${cx}" y="${H - 10}" class="axis-label ${isCurrent ? "axis-label-current" : ""}" text-anchor="middle">${t.week}</text>`
+      : "";
     return `<g class="bar-group" data-week="${idx}">
       ${bar}
       <rect class="hit" x="${margin.left + slot * idx}" y="${margin.top}" width="${slot}" height="${ih}"/>
-      <text x="${cx}" y="${H - 10}" class="axis-label ${isCurrent ? "axis-label-current" : ""}" text-anchor="middle">${t.week}</text>
+      ${label}
     </g>`;
   }).join("");
 
@@ -505,7 +784,7 @@ function drawMileageChart(totals) {
   $$(".bar-group", container).forEach((g) => {
     g.addEventListener("mousemove", (ev) => {
       const t = totals[Number(g.dataset.week)];
-      const range = `${FMT_SHORT.format(dateForIndex(t.firstIdx))} – ${FMT_SHORT.format(dateForIndex(t.firstIdx + 6))}`;
+      const range = `${FMT_SHORT.format(addDays(info.start, t.firstIdx))} – ${FMT_SHORT.format(addDays(info.start, t.lastIdx))}`;
       tooltip.innerHTML = `<strong>Week ${t.week}</strong> · ${range}<br>${t.miles} mi · ${t.runs} run${t.runs === 1 ? "" : "s"} logged`;
       tooltip.hidden = false;
       const card = tooltip.parentElement.getBoundingClientRect();
@@ -520,56 +799,230 @@ function drawMileageChart(totals) {
   });
 }
 
+/* ----- Plans tab ----- */
+
+function renderPlans() {
+  const el = $("#tab-plans");
+  const userPlans = livePlans()
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  const schedulesByPlan = {};
+  for (const s of liveSchedules()) {
+    (schedulesByPlan[s.planId] ||= []).push(s);
+  }
+
+  const planRow = (p) => {
+    const days = p.weeks.reduce((s, w) => s + w.days.length, 0);
+    const used = (schedulesByPlan[p.id] || []).length;
+    return `
+      <li class="plan-row" data-plan="${p.id}">
+        <div class="plan-row-main">
+          <strong>${p.name}</strong>
+          <span class="hint">${p.weeks.length} weeks · ${days} days${p.builtin ? " · built-in" : ""}${used ? ` · used by ${used} schedule${used === 1 ? "" : "s"}` : ""}</span>
+        </div>
+        <div class="plan-row-actions">
+          <button class="btn use-plan" data-plan="${p.id}">Use this plan</button>
+          ${p.builtin ? "" : `<button class="btn danger delete-plan" data-plan="${p.id}">Delete</button>`}
+        </div>
+      </li>`;
+  };
+
+  el.innerHTML = `
+    <div class="settings-card">
+      <h2>Upload a training plan</h2>
+      <p>Upload a <strong>markdown table</strong> (one row per week, one column per day —
+      the format of the built-in plan, <a href="plans/swap-12-week-marathon.md" target="_blank" rel="noopener">example</a>)
+      or <strong>JSON</strong> (<a href="docs/plan-format.md" target="_blank" rel="noopener">format reference</a>).
+      Day types (rest / easy / workout / long run / race) are detected automatically.</p>
+      <div class="inline-controls">
+        <label class="btn" for="plan-file">Choose file…</label>
+        <input type="file" id="plan-file" accept=".md,.markdown,.json,.txt" hidden>
+        <span class="hint">or paste the plan text below</span>
+      </div>
+      <textarea id="plan-paste" rows="4" placeholder="| | Mon | Tue | … |&#10;| --- | --- | --- | … |&#10;| Week 1 | Rest | 5 mi easy | … |"></textarea>
+      <div class="inline-controls">
+        <button id="add-plan" class="btn primary">Add plan</button>
+        <span id="plan-upload-msg" class="hint"></span>
+      </div>
+    </div>
+    <div class="settings-card">
+      <h2>Plan library</h2>
+      <ul class="plan-list">
+        ${planRow(BUILTIN_PLAN)}
+        ${userPlans.map(planRow).join("")}
+      </ul>
+    </div>`;
+
+  const msg = $("#plan-upload-msg");
+  const addPlan = (filename, text) => {
+    try {
+      const parsed = PlanParser.parsePlanFile(filename, text);
+      const now = new Date().toISOString();
+      const id = crypto.randomUUID();
+      state.plans[id] = { id, ...parsed, createdAt: now, updatedAt: now };
+      saveState();
+      pendingPlanId = id;
+      render();
+      const addedMsg = $("#plan-upload-msg");
+      addedMsg.textContent = `Added “${parsed.name.replace(/&[^;]+;/g, "")}” — use “Use this plan” below to schedule it.`;
+      addedMsg.classList.remove("sync-error");
+    } catch (e) {
+      msg.textContent = e.message;
+      msg.classList.add("sync-error");
+    }
+  };
+
+  $("#plan-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (file) addPlan(file.name, await file.text());
+    ev.target.value = "";
+  });
+  $("#add-plan").addEventListener("click", () => {
+    const text = $("#plan-paste").value.trim();
+    if (!text) {
+      msg.textContent = "Choose a file or paste plan text first.";
+      msg.classList.add("sync-error");
+      return;
+    }
+    addPlan("pasted plan", text);
+  });
+
+  $$(".use-plan", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      pendingPlanId = b.dataset.plan;
+      activeTab = "settings";
+      render();
+      const details = $("#new-schedule-details");
+      if (details) {
+        details.open = true;
+        details.scrollIntoView({ block: "start" });
+      }
+    });
+  });
+  $$(".delete-plan", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      const id = b.dataset.plan;
+      const inUse = liveSchedules().filter((s) => s.planId === id);
+      if (inUse.length) {
+        alert(`This plan is used by: ${inUse.map((s) => s.name).join(", ")}. Delete those schedules first (Settings → My schedules).`);
+        return;
+      }
+      if (!confirm("Delete this plan from your library?")) return;
+      state.plans[id] = { id, deleted: true, updatedAt: new Date().toISOString() };
+      saveState();
+      render();
+    });
+  });
+}
+
 /* ----- Settings tab ----- */
 
 function renderSettings() {
   const el = $("#tab-settings");
+  const scheds = liveSchedules();
+  const active = activeSchedule();
+
+  const schedRow = (s) => {
+    const info = schedInfo(s);
+    const range = info
+      ? `${FMT_SHORT.format(info.start)} – ${FMT_MED.format(info.end)}`
+      : "plan missing";
+    const planName = getPlan(s.planId)?.name || "(deleted plan)";
+    const isActive = active && s.id === active.id;
+    return `
+      <li class="plan-row">
+        <div class="plan-row-main">
+          <strong>${esc(s.name)}</strong>
+          ${isActive ? '<span class="today-pill">Active</span>' : ""}
+          <span class="hint">${planName} · ${s.mode === "race" ? "race day" : "starts"} ${FMT_MED.format(parseISODate(s.anchorDate))} · ${range}</span>
+        </div>
+        <div class="plan-row-actions">
+          ${isActive ? "" : `<button class="btn activate-sched" data-sched="${s.id}">Make active</button>`}
+          <button class="btn danger delete-sched" data-sched="${s.id}">Delete</button>
+        </div>
+      </li>`;
+  };
+
+  const syncLine = syncStatus.error
+    ? `<span class="sync-error">⚠ Offline (${esc(syncStatus.error)}) — changes are saved on this device and will sync when the server is reachable.</span>`
+    : (syncStatus.lastSync ? `Synced ${new Date(syncStatus.lastSync).toLocaleString()}` : "Not synced yet this session");
+
   el.innerHTML = `
     <div class="settings-card">
-      <h2>Race date</h2>
-      <p>Your marathon: <strong>${FMT_LONG.format(parseISODate(state.raceDate))}</strong><br>
-      Plan starts: <strong>${FMT_LONG.format(startDate())}</strong></p>
-      <label for="race-date-edit">Change race date</label>
+      <h2>Account</h2>
+      <p>Signed in as <strong>${esc(user.email)}</strong>. Your plans, schedules, and
+      journals are stored in your account — sign in anywhere to get them.</p>
+      <p class="hint" id="account-sync-status">${syncLine}</p>
       <div class="inline-controls">
-        <input type="date" id="race-date-edit" value="${state.raceDate}">
-        <button id="save-race-date" class="btn primary">Update</button>
+        <button id="sync-now" class="btn">Sync now</button>
+        <button id="logout" class="btn">Log out</button>
       </div>
-      <p class="hint">Journal entries stay attached to their plan day (e.g. Week 5 Wednesday), so
-      changing the date just shifts the calendar.</p>
     </div>
     <div class="settings-card">
-      <h2>Cross-device sync</h2>
-      ${syncCardHTML()}
+      <details id="new-schedule-details" ${scheds.length ? "" : "open"}>
+        <summary><h2 class="summary-h2">New schedule</h2></summary>
+        ${scheduleFormHTML()}
+      </details>
+    </div>
+    <div class="settings-card">
+      <h2>My schedules</h2>
+      ${scheds.length ? `<ul class="plan-list">${scheds.map(schedRow).join("")}</ul>`
+        : '<p class="hint">No schedules yet — create one above.</p>'}
+      <p class="hint">Each schedule keeps its own journal. Deleting a schedule deletes its journal too.</p>
     </div>
     <div class="settings-card">
       <h2>Backup</h2>
       <div class="inline-controls">
-        <button id="export-json" class="btn">Export journal (JSON)</button>
-        <label class="btn" for="import-json">Import journal…</label>
+        <button id="export-json" class="btn">Export everything (JSON)</button>
+        <label class="btn" for="import-json">Import…</label>
         <input type="file" id="import-json" accept="application/json" hidden>
       </div>
-      <p class="hint">Data lives in this browser's local storage. Export before switching devices or clearing your browser.</p>
     </div>
     <div class="settings-card danger-zone">
       <h2>Reset</h2>
-      <button id="reset-all" class="btn danger">Delete all data</button>
+      <button id="reset-all" class="btn danger">Delete all my plans, schedules & journals</button>
     </div>`;
 
-  wireSyncCard();
+  wireScheduleForm(el);
 
-  $("#save-race-date").addEventListener("click", () => {
-    const v = $("#race-date-edit").value;
-    if (!v) return;
-    state.raceDate = v;
-    state.raceDateUpdatedAt = new Date().toISOString();
-    saveState();
+  $("#sync-now").addEventListener("click", async () => {
+    $("#account-sync-status").textContent = "Syncing…";
+    await doSync();
     render();
   });
+  $("#logout").addEventListener("click", logout);
+
+  $$(".activate-sched", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      state.activeScheduleId = b.dataset.sched;
+      state.activeUpdatedAt = new Date().toISOString();
+      saveState();
+      render();
+    });
+  });
+  $$(".delete-sched", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      const s = state.schedules[b.dataset.sched];
+      if (!confirm(`Delete “${s.name}” and its journal? This syncs to all your devices.`)) return;
+      const now = new Date().toISOString();
+      state.schedules[s.id] = { id: s.id, deleted: true, updatedAt: now };
+      const journal = state.journal[s.id] || {};
+      for (const k of Object.keys(journal)) {
+        journal[k] = { deleted: true, updatedAt: now };
+      }
+      if (state.activeScheduleId === s.id) {
+        state.activeScheduleId = liveSchedules()[0]?.id || null;
+        state.activeUpdatedAt = now;
+      }
+      saveState();
+      render();
+    });
+  });
+
   $("#export-json").addEventListener("click", () => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ state }, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `marathon-training-${state.raceDate}.json`;
+    a.download = `marathon-training-backup-${toISODate(todayNoon())}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   });
@@ -578,112 +1031,35 @@ function renderSettings() {
     if (!file) return;
     try {
       const parsed = JSON.parse(await file.text());
-      if (!parsed || typeof parsed !== "object" || !parsed.raceDate) throw new Error("bad file");
-      state = {
-        raceDate: parsed.raceDate,
-        raceDateUpdatedAt: new Date().toISOString(),
-        journal: parsed.journal || {},
-      };
+      const imported = parsed.state || parsed;
+      if (!imported || typeof imported !== "object" || (!imported.schedules && !imported.plans)) {
+        throw new Error("bad file");
+      }
+      if (!confirm("Merge this backup into your current data?")) return;
+      state = mergeStates(state, { ...emptyState(), ...imported });
       saveState();
       render();
       alert("Import complete!");
     } catch {
-      alert("Sorry, that file doesn't look like a marathon-tracker export.");
+      alert("Sorry, that file doesn't look like a marathon-tracker backup.");
     }
   });
+
   $("#reset-all").addEventListener("click", () => {
-    if (confirm("Delete the race date and ALL journal entries on this device, and turn off sync? (Data already synced to the server is not deleted.) This cannot be undone.")) {
-      syncCfg = {};
-      saveSyncCfg();
-      state = { raceDate: null, raceDateUpdatedAt: null, journal: {} };
-      saveState(false);
-      activeTab = "today";
-      render();
-    }
-  });
-}
-
-function syncCardHTML() {
-  if (!syncAvailable()) {
-    return `<p class="hint">Sync needs the app's server. Open the app through
-      <code>npm start</code> or your deployed URL (not as a local file) to use it.</p>`;
-  }
-  if (!syncCfg.enabled) {
-    return `
-      <p>Keep your race date and journal in sync across phones and computers.
-      Create a sync code here, then enter the same code on your other devices.</p>
-      <div class="inline-controls">
-        <input type="text" id="sync-code-input" placeholder="your sync code" autocomplete="off">
-        <button id="generate-code" class="btn">Generate code</button>
-        <button id="enable-sync" class="btn primary">Turn on sync</button>
-      </div>
-      <p class="hint">Anyone with your sync code can read and change your training data —
-      treat it like a password. Minimum 8 characters.</p>`;
-  }
-  const last = syncCfg.lastSync
-    ? `Last synced ${new Date(syncCfg.lastSync).toLocaleString()}`
-    : "Not synced yet";
-  const status = syncStatus.error
-    ? `<span class="sync-error">⚠ ${esc(syncStatus.error)} — changes are saved locally and will sync when the server is reachable.</span>`
-    : esc(last);
-  return `
-    <p>Sync is <strong>on</strong>. Enter this code on another device
-    (Settings → Cross-device sync, or “restore” on its start screen) to link it:</p>
-    <div class="inline-controls">
-      <code id="sync-code-display" class="sync-code" data-code="${esc(syncCfg.code)}">••••••••••••</code>
-      <button id="show-code" class="btn">Show</button>
-      <button id="copy-code" class="btn">Copy</button>
-    </div>
-    <p class="hint" id="sync-status">${status}</p>
-    <div class="inline-controls">
-      <button id="sync-now" class="btn">Sync now</button>
-      <button id="disable-sync" class="btn danger">Turn off sync</button>
-    </div>`;
-}
-
-function wireSyncCard() {
-  if (!syncAvailable()) return;
-  if (!syncCfg.enabled) {
-    $("#generate-code").addEventListener("click", () => {
-      $("#sync-code-input").value = generateSyncCode();
-    });
-    $("#enable-sync").addEventListener("click", async () => {
-      const code = $("#sync-code-input").value.trim();
-      if (code.length < 8) {
-        alert("Sync codes must be at least 8 characters. Use Generate for a strong one.");
-        return;
+    if (!confirm("Delete ALL your plans, schedules, and journal entries from your account and every synced device? This cannot be undone.")) return;
+    const now = new Date().toISOString();
+    // tombstone everything so the reset wins the merge on other devices
+    for (const id of Object.keys(state.plans)) state.plans[id] = { id, deleted: true, updatedAt: now };
+    for (const id of Object.keys(state.schedules)) state.schedules[id] = { id, deleted: true, updatedAt: now };
+    for (const sid of Object.keys(state.journal)) {
+      for (const k of Object.keys(state.journal[sid])) {
+        state.journal[sid][k] = { deleted: true, updatedAt: now };
       }
-      syncCfg = { code, enabled: true };
-      saveSyncCfg();
-      await doSync();
-      render();
-    });
-    return;
-  }
-  $("#show-code").addEventListener("click", () => {
-    const el = $("#sync-code-display");
-    const hidden = el.textContent.startsWith("•");
-    el.textContent = hidden ? el.dataset.code : "••••••••••••";
-    $("#show-code").textContent = hidden ? "Hide" : "Show";
-  });
-  $("#copy-code").addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(syncCfg.code);
-      $("#copy-code").textContent = "Copied ✓";
-      setTimeout(() => { const b = $("#copy-code"); if (b) b.textContent = "Copy"; }, 1500);
-    } catch {
-      alert(`Your sync code: ${syncCfg.code}`);
     }
-  });
-  $("#sync-now").addEventListener("click", async () => {
-    $("#sync-status").textContent = "Syncing…";
-    await doSync();
-    render();
-  });
-  $("#disable-sync").addEventListener("click", () => {
-    if (!confirm("Turn off sync on this device? Your local data stays; the server copy is kept for your other devices.")) return;
-    syncCfg = {};
-    saveSyncCfg();
+    state.activeScheduleId = null;
+    state.activeUpdatedAt = now;
+    saveState();
+    activeTab = "today";
     render();
   });
 }
@@ -691,13 +1067,14 @@ function wireSyncCard() {
 /* ----- Day detail modal + journal form ----- */
 
 function openDay(i) {
-  openDayIndex = i;
-  const day = PLAN_DAYS[i];
-  const date = dateForIndex(i);
+  const info = activeInfo();
+  if (!info || !info.days[i]) return;
+  const day = info.days[i];
+  const date = addDays(info.start, i);
   const entry = entryFor(i) || {};
   const modal = $("#day-modal");
 
-  const details = day.details.map((d) => `<p>${d}</p>`).join("");
+  const details = day.details.map((d) => `<p>${detailHTML(info.plan, d)}</p>`).join("");
   const ratingButtons = [1, 2, 3, 4, 5].map((r) =>
     `<button type="button" class="star ${entry.rating >= r ? "on" : ""}" data-rating="${r}"
        aria-label="Rate ${r} of 5" aria-pressed="${entry.rating === r}">★</button>`).join("");
@@ -709,9 +1086,9 @@ function openDay(i) {
   $(".modal-body", modal).innerHTML = `
     <div class="card-meta">
       <span class="type-tag type-tag-${day.type}">${TYPE_LABELS[day.type]}</span>
-      <span class="card-date">${FMT_LONG.format(date)} · Week ${day.week} · Day ${i + 1} of ${TOTAL_DAYS}</span>
+      <span class="card-date">${FMT_LONG.format(date)} · Week ${day.week} · Day ${i + 1} of ${info.len}</span>
     </div>
-    <h2 id="modal-title">${esc(day.title)}</h2>
+    <h2 id="modal-title">${day.title}</h2>
     <div class="workout-details">${details}</div>
     <hr>
     <form id="journal-form">
@@ -783,7 +1160,7 @@ function openDay(i) {
     };
     const hasContent = entryOut.status || entryOut.distance || entryOut.duration ||
       entryOut.rpe || entryOut.rating || entryOut.notes;
-    if (hasContent) state.journal[i] = entryOut;
+    if (hasContent) setEntry(i, entryOut);
     else deleteEntry(i);
     saveState();
     const confirmEl = $("#save-confirm");
@@ -807,74 +1184,51 @@ function openDay(i) {
 }
 
 function closeModal() {
-  openDayIndex = null;
   $("#day-modal").close();
 }
 
-/* ---------- wiring ---------- */
+/* ---------- boot & wiring ---------- */
+
+async function boot() {
+  try {
+    const res = await fetch("/api/me");
+    if (res.ok) {
+      user = (await res.json()).user;
+      localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
+    } else {
+      user = null;
+    }
+  } catch {
+    // server unreachable: fall back to the last signed-in user's cache
+    const last = loadLastUser();
+    if (last) {
+      user = last;
+      offline = true;
+      syncStatus.error = "network unreachable";
+    }
+  }
+  if (!user) {
+    render();
+    return;
+  }
+  state = loadCache() || emptyState();
+  migrateLegacyState();
+  render();
+  if (!offline) {
+    await doSync();
+    render();
+  }
+}
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Setup screen
-  $("#setup-form").addEventListener("submit", (ev) => {
+  $("#auth-form").addEventListener("submit", handleAuthSubmit);
+  $("#auth-switch-link").addEventListener("click", (ev) => {
     ev.preventDefault();
-    const v = $("#race-date-input").value;
-    if (!v) return;
-    state.raceDate = v;
-    state.raceDateUpdatedAt = new Date().toISOString();
-    saveState();
-    render();
-  });
-  const dateInput = $("#race-date-input");
-  dateInput.min = toISODate(todayNoon());
-  dateInput.addEventListener("input", () => {
-    const hint = $("#sunday-hint");
-    if (!dateInput.value) { hint.hidden = true; return; }
-    const dow = parseISODate(dateInput.value).getDay();
-    hint.hidden = dow === 0;
+    authMode = authMode === "login" ? "register" : "login";
+    $("#auth-error").hidden = true;
+    renderAuth();
   });
 
-  // Restore from a sync code on the setup screen
-  if (!syncAvailable()) {
-    $("#restore-wrap").hidden = true;
-  } else {
-    $("#restore-sync").addEventListener("click", async () => {
-      const errEl = $("#restore-error");
-      errEl.hidden = true;
-      const code = $("#restore-code-input").value.trim();
-      if (code.length < 8) {
-        errEl.textContent = "Sync codes are at least 8 characters.";
-        errEl.hidden = false;
-        return;
-      }
-      syncCfg = { code, enabled: true };
-      saveSyncCfg();
-      await doSync();
-      if (state.raceDate) {
-        render();
-      } else {
-        syncCfg = {};
-        saveSyncCfg();
-        errEl.textContent = syncStatus.error
-          ? `Couldn't reach the sync server (${syncStatus.error}).`
-          : "No synced data found for that code — check it on your other device.";
-        errEl.hidden = false;
-      }
-    });
-  }
-
-  // Pull latest data on load and whenever the tab regains focus
-  if (syncCfg.enabled) {
-    doSync().then(() => render());
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && syncCfg.enabled && !$("#day-modal").open) {
-      doSync().then(() => {
-        if (!$("#day-modal").open) render();
-      });
-    }
-  });
-
-  // Tabs
   $$("#tabs button").forEach((b) => {
     b.addEventListener("click", () => {
       activeTab = b.dataset.tab;
@@ -897,11 +1251,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Modal close
   $("#modal-close").addEventListener("click", closeModal);
   $("#day-modal").addEventListener("click", (ev) => {
     if (ev.target === ev.currentTarget) closeModal(); // backdrop click
   });
 
-  render();
+  // pull latest data whenever the tab regains focus
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && user && !$("#day-modal").open) {
+      doSync().then(() => {
+        if (!$("#day-modal").open) render();
+      });
+    }
+  });
+
+  boot();
 });
