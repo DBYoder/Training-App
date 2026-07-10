@@ -291,11 +291,24 @@ function handleStatic(req, res) {
     filePath = path.join(ROOT, "index.html");
   }
 
+  // no-cache = browsers may store but MUST revalidate, so a redeploy is
+  // picked up immediately (stale app.js against a new index.html bricks the
+  // page); unchanged files still answer with a cheap 304
+  const stat = fs.statSync(filePath);
+  const lastModified = stat.mtime.toUTCString();
+  const ims = req.headers["if-modified-since"];
+  const headers = {
+    "Cache-Control": "no-cache",
+    "Last-Modified": lastModified,
+  };
+  if (ims && !Number.isNaN(Date.parse(ims)) &&
+      Math.floor(stat.mtimeMs / 1000) <= Math.floor(Date.parse(ims) / 1000)) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
-    "Content-Type": MIME[ext] || "application/octet-stream",
-    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=3600",
-  });
+  headers["Content-Type"] = MIME[ext] || "application/octet-stream";
+  res.writeHead(200, headers);
   if (req.method === "HEAD") return res.end();
   fs.createReadStream(filePath).pipe(res);
 }
