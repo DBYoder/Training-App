@@ -1,0 +1,13 @@
+{
+  "name": "marathon-training-tracker",
+  "version": "1.0.0",
+  "description": "Web app that back-schedules the SWAP 12-week marathon plan from your race date, with a daily workout view and training journal.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

@@ -25,12 +25,17 @@ track progress toward your goal.
 
 ## Running it
 
-It's a fully static site — no build step, no server, no dependencies.
+The app itself is fully static — no build step, no dependencies. A tiny
+dependency-free Node server (`server.js`) is included for hosting.
 
-- **Locally:** open `index.html` in a browser, or serve the folder with
-  `python3 -m http.server` and visit `http://localhost:8000`.
-- **GitHub Pages:** in the repo settings, enable Pages for this branch/root and
-  the app is live at your Pages URL.
+- **Locally:** run `npm start` and visit `http://localhost:3000`, or just open
+  `index.html` directly in a browser.
+- **Railway:** create a new Railway project from this GitHub repo — that's it.
+  Railway detects the Node app automatically, runs `npm start`, and the server
+  binds to Railway's `PORT`. Then open **Settings → Networking → Generate
+  Domain** on the service to get your public URL.
+- **GitHub Pages (alternative):** enable Pages for this branch/root in the repo
+  settings; the app works as a plain static site too.
 
 ## Where your data lives
 
@@ -47,6 +52,8 @@ index.html      app shell
 css/styles.css  styles (light + dark)
 js/plan.js      the 12-week plan as structured data (84 days)
 js/app.js       scheduling, journal, rendering, chart
+server.js       dependency-free static server for hosting (Railway etc.)
+package.json    start script + Node version for Railway's auto-detection
 ```
 
 ## The plan
