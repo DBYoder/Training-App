@@ -367,6 +367,20 @@ textarea { width: 100%; resize: vertical; }
 .settings-card label { font-weight: 600; }
 .danger-zone { border-color: color-mix(in srgb, var(--status-critical) 40%, transparent); }
 
+.sync-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--page);
+  border: 1px solid var(--baseline);
+  border-radius: 8px;
+  padding: 8px 12px;
+  letter-spacing: 0.04em;
+  user-select: all;
+}
+.sync-error { color: var(--status-critical); }
+.restore-details { margin-top: 16px; border-top: 1px solid var(--gridline); padding-top: 12px; }
+.restore-details summary { cursor: pointer; font-weight: 600; color: var(--text-secondary); }
+.restore-details .inline-controls { margin-top: 8px; }
+
 /* ---------- modal ---------- */
 
 dialog#day-modal {

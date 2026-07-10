@@ -28,17 +28,133 @@ function loadState() {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object") {
-        return { raceDate: parsed.raceDate || null, journal: parsed.journal || {} };
+        return {
+          raceDate: parsed.raceDate || null,
+          raceDateUpdatedAt: parsed.raceDateUpdatedAt || null,
+          journal: parsed.journal || {},
+        };
       }
     }
   } catch (e) {
     console.warn("Could not load saved data:", e);
   }
-  return { raceDate: null, journal: {} };
+  return { raceDate: null, raceDateUpdatedAt: null, journal: {} };
 }
 
-function saveState() {
+function saveState(triggerSync = true) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (triggerSync) schedulePush();
+}
+
+/* ---------- cross-device sync ----------
+ * State syncs through the app's server (/api/sync) under a user-chosen sync
+ * code. Merging is last-write-wins per journal entry via each entry's
+ * updatedAt; deletions are kept as {deleted:true} tombstones so they
+ * propagate. The race date carries its own raceDateUpdatedAt.
+ */
+
+const SYNC_CFG_KEY = "marathonTracker.sync.v1";
+let syncCfg = loadSyncCfg();
+let syncStatus = { error: null };
+let syncInProgress = false;
+let syncTimer = null;
+
+function loadSyncCfg() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_CFG_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSyncCfg() {
+  localStorage.setItem(SYNC_CFG_KEY, JSON.stringify(syncCfg));
+}
+
+function syncAvailable() {
+  return location.protocol !== "file:";
+}
+
+function generateSyncCode() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no lookalikes
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]);
+  return [0, 4, 8, 12].map((k) => chars.slice(k, k + 4).join("")).join("-");
+}
+
+async function syncFetch(method, body) {
+  const res = await fetch("/api/sync", {
+    method,
+    headers: {
+      "X-Sync-Code": syncCfg.code,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`sync server error (${res.status})`);
+  return res.json();
+}
+
+function mergeStates(local, remote) {
+  const ts = (v) => (v ? Date.parse(v) || 0 : 0);
+  const merged = {
+    raceDate: local.raceDate,
+    raceDateUpdatedAt: local.raceDateUpdatedAt,
+    journal: {},
+  };
+  if (
+    (remote.raceDate || remote.raceDateUpdatedAt) &&
+    (!local.raceDate || ts(remote.raceDateUpdatedAt) > ts(local.raceDateUpdatedAt))
+  ) {
+    merged.raceDate = remote.raceDate;
+    merged.raceDateUpdatedAt = remote.raceDateUpdatedAt;
+  }
+  const keys = new Set([
+    ...Object.keys(local.journal || {}),
+    ...Object.keys(remote.journal || {}),
+  ]);
+  for (const k of keys) {
+    const a = (local.journal || {})[k];
+    const b = (remote.journal || {})[k];
+    merged.journal[k] = ts(b && b.updatedAt) > ts(a && a.updatedAt) ? b : (a ?? b);
+  }
+  return merged;
+}
+
+async function doSync() {
+  if (!syncCfg.enabled || syncInProgress || !syncAvailable()) return;
+  syncInProgress = true;
+  try {
+    const remote = await syncFetch("GET");
+    if (remote && remote.state) {
+      state = mergeStates(state, remote.state);
+      saveState(false);
+    }
+    // don't create a server record from an empty local state (e.g. a typo'd
+    // code during restore)
+    if (state.raceDate || Object.keys(state.journal).length) {
+      await syncFetch("PUT", { state });
+    }
+    syncCfg.lastSync = new Date().toISOString();
+    syncStatus.error = null;
+    saveSyncCfg();
+  } catch (e) {
+    syncStatus.error = e.message;
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+function schedulePush() {
+  if (!syncCfg.enabled || syncInProgress || !syncAvailable()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    await doSync();
+    renderCountdownChip();
+    if (activeTab === "settings" && !$("#day-modal").open) render();
+  }, 1500);
 }
 
 /* ---------- date helpers (noon-anchored to dodge DST edges) ---------- */
@@ -87,7 +203,13 @@ const FMT_SHORT = new Intl.DateTimeFormat(undefined, { month: "short", day: "num
 /* ---------- journal helpers ---------- */
 
 function entryFor(i) {
-  return state.journal[i] || null;
+  const e = state.journal[i];
+  return e && !e.deleted ? e : null; // deleted = sync tombstone
+}
+
+function deleteEntry(i) {
+  // tombstone instead of removal, so the deletion syncs to other devices
+  state.journal[i] = { deleted: true, updatedAt: new Date().toISOString() };
 }
 
 function parseDuration(text) {
@@ -416,6 +538,10 @@ function renderSettings() {
       changing the date just shifts the calendar.</p>
     </div>
     <div class="settings-card">
+      <h2>Cross-device sync</h2>
+      ${syncCardHTML()}
+    </div>
+    <div class="settings-card">
       <h2>Backup</h2>
       <div class="inline-controls">
         <button id="export-json" class="btn">Export journal (JSON)</button>
@@ -429,10 +555,13 @@ function renderSettings() {
       <button id="reset-all" class="btn danger">Delete all data</button>
     </div>`;
 
+  wireSyncCard();
+
   $("#save-race-date").addEventListener("click", () => {
     const v = $("#race-date-edit").value;
     if (!v) return;
     state.raceDate = v;
+    state.raceDateUpdatedAt = new Date().toISOString();
     saveState();
     render();
   });
@@ -450,7 +579,11 @@ function renderSettings() {
     try {
       const parsed = JSON.parse(await file.text());
       if (!parsed || typeof parsed !== "object" || !parsed.raceDate) throw new Error("bad file");
-      state = { raceDate: parsed.raceDate, journal: parsed.journal || {} };
+      state = {
+        raceDate: parsed.raceDate,
+        raceDateUpdatedAt: new Date().toISOString(),
+        journal: parsed.journal || {},
+      };
       saveState();
       render();
       alert("Import complete!");
@@ -459,12 +592,99 @@ function renderSettings() {
     }
   });
   $("#reset-all").addEventListener("click", () => {
-    if (confirm("Delete the race date and ALL journal entries? This cannot be undone.")) {
-      state = { raceDate: null, journal: {} };
-      saveState();
+    if (confirm("Delete the race date and ALL journal entries on this device, and turn off sync? (Data already synced to the server is not deleted.) This cannot be undone.")) {
+      syncCfg = {};
+      saveSyncCfg();
+      state = { raceDate: null, raceDateUpdatedAt: null, journal: {} };
+      saveState(false);
       activeTab = "today";
       render();
     }
+  });
+}
+
+function syncCardHTML() {
+  if (!syncAvailable()) {
+    return `<p class="hint">Sync needs the app's server. Open the app through
+      <code>npm start</code> or your deployed URL (not as a local file) to use it.</p>`;
+  }
+  if (!syncCfg.enabled) {
+    return `
+      <p>Keep your race date and journal in sync across phones and computers.
+      Create a sync code here, then enter the same code on your other devices.</p>
+      <div class="inline-controls">
+        <input type="text" id="sync-code-input" placeholder="your sync code" autocomplete="off">
+        <button id="generate-code" class="btn">Generate code</button>
+        <button id="enable-sync" class="btn primary">Turn on sync</button>
+      </div>
+      <p class="hint">Anyone with your sync code can read and change your training data —
+      treat it like a password. Minimum 8 characters.</p>`;
+  }
+  const last = syncCfg.lastSync
+    ? `Last synced ${new Date(syncCfg.lastSync).toLocaleString()}`
+    : "Not synced yet";
+  const status = syncStatus.error
+    ? `<span class="sync-error">⚠ ${esc(syncStatus.error)} — changes are saved locally and will sync when the server is reachable.</span>`
+    : esc(last);
+  return `
+    <p>Sync is <strong>on</strong>. Enter this code on another device
+    (Settings → Cross-device sync, or “restore” on its start screen) to link it:</p>
+    <div class="inline-controls">
+      <code id="sync-code-display" class="sync-code" data-code="${esc(syncCfg.code)}">••••••••••••</code>
+      <button id="show-code" class="btn">Show</button>
+      <button id="copy-code" class="btn">Copy</button>
+    </div>
+    <p class="hint" id="sync-status">${status}</p>
+    <div class="inline-controls">
+      <button id="sync-now" class="btn">Sync now</button>
+      <button id="disable-sync" class="btn danger">Turn off sync</button>
+    </div>`;
+}
+
+function wireSyncCard() {
+  if (!syncAvailable()) return;
+  if (!syncCfg.enabled) {
+    $("#generate-code").addEventListener("click", () => {
+      $("#sync-code-input").value = generateSyncCode();
+    });
+    $("#enable-sync").addEventListener("click", async () => {
+      const code = $("#sync-code-input").value.trim();
+      if (code.length < 8) {
+        alert("Sync codes must be at least 8 characters. Use Generate for a strong one.");
+        return;
+      }
+      syncCfg = { code, enabled: true };
+      saveSyncCfg();
+      await doSync();
+      render();
+    });
+    return;
+  }
+  $("#show-code").addEventListener("click", () => {
+    const el = $("#sync-code-display");
+    const hidden = el.textContent.startsWith("•");
+    el.textContent = hidden ? el.dataset.code : "••••••••••••";
+    $("#show-code").textContent = hidden ? "Hide" : "Show";
+  });
+  $("#copy-code").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(syncCfg.code);
+      $("#copy-code").textContent = "Copied ✓";
+      setTimeout(() => { const b = $("#copy-code"); if (b) b.textContent = "Copy"; }, 1500);
+    } catch {
+      alert(`Your sync code: ${syncCfg.code}`);
+    }
+  });
+  $("#sync-now").addEventListener("click", async () => {
+    $("#sync-status").textContent = "Syncing…";
+    await doSync();
+    render();
+  });
+  $("#disable-sync").addEventListener("click", () => {
+    if (!confirm("Turn off sync on this device? Your local data stays; the server copy is kept for your other devices.")) return;
+    syncCfg = {};
+    saveSyncCfg();
+    render();
   });
 }
 
@@ -564,7 +784,7 @@ function openDay(i) {
     const hasContent = entryOut.status || entryOut.distance || entryOut.duration ||
       entryOut.rpe || entryOut.rating || entryOut.notes;
     if (hasContent) state.journal[i] = entryOut;
-    else delete state.journal[i];
+    else deleteEntry(i);
     saveState();
     const confirmEl = $("#save-confirm");
     confirmEl.hidden = false;
@@ -576,7 +796,7 @@ function openDay(i) {
   if (clearBtn) {
     clearBtn.addEventListener("click", () => {
       if (!confirm("Delete this journal entry?")) return;
-      delete state.journal[i];
+      deleteEntry(i);
       saveState();
       closeModal();
       render();
@@ -600,6 +820,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const v = $("#race-date-input").value;
     if (!v) return;
     state.raceDate = v;
+    state.raceDateUpdatedAt = new Date().toISOString();
     saveState();
     render();
   });
@@ -610,6 +831,47 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!dateInput.value) { hint.hidden = true; return; }
     const dow = parseISODate(dateInput.value).getDay();
     hint.hidden = dow === 0;
+  });
+
+  // Restore from a sync code on the setup screen
+  if (!syncAvailable()) {
+    $("#restore-wrap").hidden = true;
+  } else {
+    $("#restore-sync").addEventListener("click", async () => {
+      const errEl = $("#restore-error");
+      errEl.hidden = true;
+      const code = $("#restore-code-input").value.trim();
+      if (code.length < 8) {
+        errEl.textContent = "Sync codes are at least 8 characters.";
+        errEl.hidden = false;
+        return;
+      }
+      syncCfg = { code, enabled: true };
+      saveSyncCfg();
+      await doSync();
+      if (state.raceDate) {
+        render();
+      } else {
+        syncCfg = {};
+        saveSyncCfg();
+        errEl.textContent = syncStatus.error
+          ? `Couldn't reach the sync server (${syncStatus.error}).`
+          : "No synced data found for that code — check it on your other device.";
+        errEl.hidden = false;
+      }
+    });
+  }
+
+  // Pull latest data on load and whenever the tab regains focus
+  if (syncCfg.enabled) {
+    doSync().then(() => render());
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && syncCfg.enabled && !$("#day-modal").open) {
+      doSync().then(() => {
+        if (!$("#day-modal").open) render();
+      });
+    }
   });
 
   // Tabs

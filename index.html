@@ -42,6 +42,16 @@
         </form>
         <p class="hint">The distance ranges create multiple plans in one — low end of the range
         for intermediate runners, high end for advanced athletes with a big base.</p>
+        <details id="restore-wrap" class="restore-details">
+          <summary>Already using this app on another device?</summary>
+          <p class="hint">Enter the sync code from your other device (Settings → Cross-device sync)
+          to restore your schedule and journal here.</p>
+          <div class="inline-controls">
+            <input type="text" id="restore-code-input" placeholder="sync code" autocomplete="off">
+            <button type="button" id="restore-sync" class="btn">Restore from sync</button>
+          </div>
+          <p id="restore-error" class="hint sync-error" hidden></p>
+        </details>
       </div>
     </section>
 

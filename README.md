@@ -20,6 +20,9 @@ track progress toward your goal.
   fueling, etc.
 - **Progress tracking** — days-to-race, percent through the plan, workouts
   completed, total miles, a miles-per-week chart, and a week-by-week table.
+- **Cross-device sync** — turn on sync in Settings to get a private sync code,
+  then enter that code on your phone/other computer (Settings, or "restore" on
+  the start screen) to keep race date and journal in sync everywhere.
 - **Backup** — export/import your journal as JSON from the Settings tab.
 - Light and dark mode, mobile friendly.
 
@@ -30,20 +33,35 @@ dependency-free Node server (`server.js`) is included for hosting.
 
 - **Locally:** run `npm start` and visit `http://localhost:3000`, or just open
   `index.html` directly in a browser.
-- **Railway:** create a new Railway project from this GitHub repo — that's it.
-  Railway detects the Node app automatically, runs `npm start`, and the server
-  binds to Railway's `PORT`. Then open **Settings → Networking → Generate
-  Domain** on the service to get your public URL.
+- **Railway:** create a new Railway project from this GitHub repo — Railway
+  detects the Node app automatically, runs `npm start`, and the server binds to
+  Railway's `PORT`. Then open **Settings → Networking → Generate Domain** on the
+  service to get your public URL.
+  - **For sync to survive redeploys, attach a volume:** on the service, add a
+    volume with mount path `/app/data` (the server's default data directory).
+    Alternatively mount it anywhere and set the `DATA_DIR` environment variable
+    to that path. Without a volume the app still works, but synced data is
+    reset on each deploy.
 - **GitHub Pages (alternative):** enable Pages for this branch/root in the repo
-  settings; the app works as a plain static site too.
+  settings; the app works as a plain static site too (without cross-device sync,
+  which needs the server).
 
 ## Where your data lives
 
-Everything (race date + journal) is stored in your browser's `localStorage` —
-nothing leaves your device. Use **Settings → Export** to back it up or move it
-to another device. Journal entries are keyed to plan days (e.g. "Week 5,
+Everything (race date + journal) is stored in your browser's `localStorage` and
+works fully offline. Journal entries are keyed to plan days (e.g. "Week 5,
 Wednesday workout"), so changing the race date later shifts the calendar
 without losing any entries.
+
+With **cross-device sync** turned on, the app also mirrors your data to the
+server under your sync code. The code is never stored on the server — data
+lives under its SHA-256 hash, so the code works like a password: anyone who has
+it can read and change that training log. Use the generated codes (or something
+equally strong) and keep them private. Syncing merges by most-recent-edit per
+journal entry, and deletions propagate too, so devices converge even after
+offline edits.
+
+**Settings → Export** still gives you a JSON backup at any time.
 
 ## Project layout
 
