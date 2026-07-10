@@ -11,13 +11,17 @@ went to track your progress.
   journals are stored server-side, so you can sign in from any device and share
   the app with training partners.
 - **Plan library** — the SWAP 12-Week Advanced Marathon Plan is built in, and
-  you can upload your own plans as a markdown table or JSON
+  you can upload your own plans as a **PDF** (grid-style plans; the table is
+  reconstructed from the text layout), a markdown table, or JSON
   (see [docs/plan-format.md](docs/plan-format.md)). Day types
   (rest / easy / workout / long run / race) are detected automatically.
-- **Flexible scheduling** — create any number of schedules from any plan:
-  either **work backward from a goal race** (the last plan day lands on race
-  day) or **start on a date** (day 1 is the date you pick). Each schedule keeps
-  its own journal; switch the active one in Settings.
+- **Flexible scheduling with Monday-aligned weeks** — create any number of
+  schedules from any plan: either **work backward from a goal race** or
+  **start on a date**. Training weeks always align to real calendar weeks
+  (Monday–Sunday for Mon-first plans): start dates snap forward to the next
+  Monday, and in race mode the race lands on its true date inside the final
+  week, dropping any unused post-race taper days. Each schedule keeps its own
+  journal; switch the active one in Settings.
 - **Today view** — today's workout front and center, with a race-day countdown
   (or day-X-of-N progress for start-mode schedules).
 - **Full schedule** — every week expandable, current week highlighted, days
@@ -55,7 +59,8 @@ the app and the API.
 index.html         app shell (auth screen + tabbed app)
 css/styles.css     styles (light + dark)
 js/plan.js         the built-in SWAP plan as structured data
-js/planParser.js   markdown-table & JSON plan parsing (browser + Node)
+js/planParser.js   markdown-table, JSON & PDF-grid plan parsing (browser + Node)
+js/vendor/         vendored pdf.js (loaded on demand for PDF uploads)
 js/app.js          auth, schedules, journal, rendering, chart, sync
 server.js          dependency-free static server + JSON API
 plans/             example plan file (the built-in plan's source)

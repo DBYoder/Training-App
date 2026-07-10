@@ -120,10 +120,17 @@
     if (!weekRows.length) throw new Error("The table has a header but no week rows.");
     if (weekRows.length > MAX_WEEKS) throw new Error(`Too many weeks (max ${MAX_WEEKS}).`);
 
-    const weeks = weekRows.map((cells, wi) => {
+    const weeks = buildWeeksFromCells(
+      weekRows.map((cells) => cells.slice(1)), dayHeaders);
+    return { name: name || fallbackName, weeks, dayHeaders, htmlDetails: true };
+  }
+
+  /* rows: [[cellText per day]] — shared by the markdown and PDF paths */
+  function buildWeeksFromCells(rows, dayHeaders) {
+    return rows.map((cells, wi) => {
       const days = dayHeaders.map((dow, di) => {
-        const raw = cleanCell(cells[di + 1] || "");
-        const isLastDay = wi === weekRows.length - 1 && di === dayHeaders.length - 1;
+        const raw = cleanCell(cells[di] || "");
+        const isLastDay = wi === rows.length - 1 && di === dayHeaders.length - 1;
         if (!raw) {
           return { dow, type: "rest", title: "Rest day", details: ["Rest."] };
         }
@@ -136,8 +143,117 @@
       });
       return { days };
     });
+  }
 
-    return { name: name || fallbackName, weeks, dayHeaders, htmlDetails: true };
+  /* ----- PDF plans -----
+   * Input: per-page positioned text items extracted with pdf.js
+   * (pages: [{items: [{x, y, str}]}], y in PDF coordinates, bottom-up).
+   * Reconstructs a week × day grid: the line containing several weekday
+   * names gives the column x-positions; "Week N" labels (or any text in
+   * the left gutter) start new rows; every other item lands in the column
+   * band its x falls into. Works for grid-style plan PDFs (a table per
+   * page, rows may continue across pages).
+   */
+  const WEEKDAY_NAMES = /^(mon|tue(s)?|wed(nesday)?|thu(rs)?|fri|sat(urday)?|sun)(day)?\.?$/i;
+
+  function groupLines(items) {
+    const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+    const lines = [];
+    for (const item of sorted) {
+      const line = lines[lines.length - 1];
+      if (line && Math.abs(line.y - item.y) <= 3) {
+        line.items.push(item);
+      } else {
+        lines.push({ y: item.y, items: [item] });
+      }
+    }
+    for (const line of lines) line.items.sort((a, b) => a.x - b.x);
+    return lines;
+  }
+
+  function parsePdfItems(pages, fallbackName) {
+    const pageLines = pages.map((p) =>
+      groupLines((p.items || []).filter((i) => i.str && i.str.trim())));
+
+    // locate the header line: 3+ weekday tokens on one line
+    let headerCols = null;
+    let headerPage = -1;
+    let headerY = 0;
+    outer:
+    for (let pi = 0; pi < pageLines.length; pi++) {
+      for (const line of pageLines[pi]) {
+        const dayItems = line.items.filter((i) => WEEKDAY_NAMES.test(i.str.trim()));
+        if (dayItems.length >= 3) {
+          headerCols = dayItems.map((i) => ({ x: i.x, label: i.str.trim().slice(0, 3) }));
+          headerPage = pi;
+          headerY = line.y;
+          break outer;
+        }
+      }
+    }
+    if (!headerCols) {
+      throw new Error("Couldn't find a weekday header row (Mon/Tue/…) in the PDF. PDF import works for grid-style plans — one row per week, one column per day. You can also paste the plan as a markdown table.");
+    }
+
+    // the "Week N" gutter can be much narrower than the day columns, so
+    // locate it from the week labels themselves: items matching "Week N"
+    // that sit left of the first day column's text
+    const xs = headerCols.map((c) => c.x);
+    const anchorXs = [];
+    for (const lines of pageLines) {
+      for (const line of lines) {
+        for (const item of line.items) {
+          if (/^week\s*\d+/i.test(item.str.trim()) && item.x < xs[0] - 2) {
+            anchorXs.push(item.x);
+          }
+        }
+      }
+    }
+    if (!anchorXs.length) {
+      throw new Error('No week rows found — expected "Week 1", "Week 2", … labels in the first column of the PDF table.');
+    }
+    const leftEdge = (Math.max(...anchorXs) + xs[0]) / 2;
+    const boundaries = xs.map((x, i) => (i === 0 ? leftEdge : (xs[i - 1] + xs[i]) / 2));
+    const colFor = (x) => {
+      if (x < leftEdge) return -1; // gutter
+      let col = 0;
+      for (let i = boundaries.length - 1; i >= 0; i--) {
+        if (x >= boundaries[i]) { col = i; break; }
+      }
+      return col;
+    };
+
+    const rows = []; // [{cells: [[strings]]}]
+    let nameParts = [];
+    for (let pi = 0; pi < pageLines.length; pi++) {
+      for (const line of pageLines[pi]) {
+        if (pi < headerPage || (pi === headerPage && line.y > headerY)) {
+          // text above the table: treat as the plan title
+          nameParts.push(line.items.map((i) => i.str).join(" "));
+          continue;
+        }
+        if (pi === headerPage && Math.abs(line.y - headerY) <= 3) continue; // header itself
+        const gutterItem = line.items.find((i) =>
+          colFor(i.x) === -1 && /^week\s*\d*$/i.test(i.str.trim()));
+        if (gutterItem) rows.push({ cells: headerCols.map(() => []) });
+        if (!rows.length) continue; // stray text before the first week row
+        const row = rows[rows.length - 1];
+        for (const item of line.items) {
+          const col = colFor(item.x);
+          if (col >= 0) row.cells[col].push(item.str.trim());
+        }
+      }
+    }
+    if (!rows.length) {
+      throw new Error('No week rows found — expected "Week 1", "Week 2", … labels in the first column of the PDF table.');
+    }
+    if (rows.length > MAX_WEEKS) throw new Error(`Too many weeks (max ${MAX_WEEKS}).`);
+
+    const canonical = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+    const dayHeaders = headerCols.map((c) => canonical[c.label.toLowerCase()] || c.label);
+    const weeks = buildWeeksFromCells(rows.map((r) => r.cells.map((c) => c.join(" "))), dayHeaders);
+    const name = cleanCell(nameParts.join(" ")).slice(0, 120) || fallbackName;
+    return { name: escapeHtml(name), weeks, dayHeaders, htmlDetails: true };
   }
 
   function parseJsonPlan(text, fallbackName) {
@@ -198,5 +314,5 @@
     return parseMarkdownPlan(trimmed, fallbackName);
   }
 
-  exportsTarget.PlanParser = { parsePlanFile, parseMarkdownPlan, parseJsonPlan, escapeHtml };
+  exportsTarget.PlanParser = { parsePlanFile, parseMarkdownPlan, parseJsonPlan, parsePdfItems, escapeHtml };
 })(typeof module !== "undefined" && module.exports ? module.exports : window);

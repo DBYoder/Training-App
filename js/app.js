@@ -157,21 +157,60 @@ function activeSchedule() {
   return s && !s.deleted && getPlan(s.planId) ? s : null;
 }
 
+/* Weeks align to the calendar: for 7-day plans, day 1 always lands on the
+ * plan's first weekday (Monday for the built-in plan and Mon-first uploads).
+ * Start mode snaps the start date forward to that weekday; race mode lays
+ * out full aligned weeks with the race (the plan's last day) on its true
+ * date — any final-week cells after race day are dropped.
+ */
+const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+function weekStartDow(plan) {
+  if (plan.weeks[0].days.length !== 7) return null; // only calendar-like plans align
+  const key = String(plan.dayHeaders?.[0] || "").trim().toLowerCase().slice(0, 3);
+  return WEEKDAY_INDEX[key] ?? 1; // default to Monday
+}
+
+function resolveSchedule(plan, mode, anchorISO) {
+  const anchor = parseISODate(anchorISO);
+  const alignDow = weekStartDow(plan);
+  let start;
+  let weekDayLists = plan.weeks.map((w) => w.days.slice());
+
+  if (alignDow === null) {
+    const len = weekDayLists.reduce((s, d) => s + d.length, 0);
+    start = mode === "start" ? anchor : addDays(anchor, -(len - 1));
+  } else if (mode === "start") {
+    start = addDays(anchor, (alignDow - anchor.getDay() + 7) % 7);
+  } else {
+    const raceOffset = (anchor.getDay() - alignDow + 7) % 7; // race's position in its week
+    start = addDays(anchor, -raceOffset - 7 * (weekDayLists.length - 1));
+    if (raceOffset < 6) {
+      const finalWeek = weekDayLists[weekDayLists.length - 1];
+      weekDayLists[weekDayLists.length - 1] =
+        [...finalWeek.slice(0, raceOffset), finalWeek[finalWeek.length - 1]];
+    }
+  }
+
+  const days = [];
+  const weeks = weekDayLists.map((list, wi) => {
+    const firstIdx = days.length;
+    for (const d of list) days.push({ week: wi + 1, ...d });
+    return { week: wi + 1, firstIdx, lastIdx: days.length - 1, days: list };
+  });
+  return { days, weeks, len: days.length, start, end: addDays(start, days.length - 1) };
+}
+
 /* Resolved calendar info for a schedule. */
 function schedInfo(sched) {
   const plan = getPlan(sched.planId);
   if (!plan) return null;
-  const days = plan.weeks.flatMap((w, wi) => w.days.map((d) => ({ week: wi + 1, ...d })));
-  const len = days.length;
-  const start = sched.mode === "start"
-    ? parseISODate(sched.anchorDate)
-    : addDays(parseISODate(sched.anchorDate), -(len - 1));
+  const resolved = resolveSchedule(plan, sched.mode, sched.anchorDate);
   return {
-    sched, plan, days, len, start,
-    end: addDays(start, len - 1),
+    sched, plan, ...resolved,
     dpw: plan.weeks[0].days.length,
-    weeksCount: plan.weeks.length,
-    todayIdx: Math.round((todayNoon() - start) / MS_PER_DAY),
+    weeksCount: resolved.weeks.length,
+    todayIdx: Math.round((todayNoon() - resolved.start) / MS_PER_DAY),
     isRaceGoal: sched.mode === "race",
   };
 }
@@ -493,12 +532,17 @@ function wireScheduleForm(container) {
     }
     const plan = getPlan(form.planId.value);
     if (plan && form.anchorDate.value) {
-      const days = plan.weeks.reduce((s, w) => s + w.days.length, 0);
-      const anchor = parseISODate(form.anchorDate.value);
-      const start = isRace ? addDays(anchor, -(days - 1)) : anchor;
-      const end = isRace ? anchor : addDays(anchor, days - 1);
+      const r = resolveSchedule(plan, form.mode.value, form.anchorDate.value);
+      const notes = [];
+      if (!isRace && toISODate(r.start) !== form.anchorDate.value) {
+        notes.push(`day 1 snaps to ${plan.dayHeaders?.[0] || "Monday"}`);
+      }
+      if (isRace && r.len % 7 !== 0 && weekStartDow(plan) !== null) {
+        notes.push("final week ends on race day");
+      }
       $(".anchor-preview", form).textContent =
-        `${plan.weeks.length} weeks: ${FMT_MED.format(start)} → ${FMT_MED.format(end)}`;
+        `${r.weeks.length} weeks: ${FMT_MED.format(r.start)} → ${FMT_MED.format(r.end)}` +
+        (notes.length ? ` (${notes.join("; ")})` : "");
     }
   };
   form.addEventListener("input", updateLabels);
@@ -621,11 +665,11 @@ function renderScheduleTab() {
   if (!info) return renderOnboarding(el);
 
   const ti = info.todayIdx;
-  let idx = 0;
-  const html = info.plan.weeks.map((w, wi) => {
-    const firstIdx = idx;
-    const rows = w.days.map((day) => {
-      const i = idx++;
+  const html = info.weeks.map((w) => {
+    const wi = w.week - 1;
+    const firstIdx = w.firstIdx;
+    const rows = w.days.map((day, di) => {
+      const i = firstIdx + di;
       const date = addDays(info.start, i);
       const entry = entryFor(i);
       const isToday = i === ti;
@@ -641,7 +685,7 @@ function renderScheduleTab() {
           <span class="sched-title">${day.title}</span>
         </li>`;
     }).join("");
-    const lastIdx = idx - 1;
+    const lastIdx = w.lastIdx;
     const range = `${FMT_SHORT.format(addDays(info.start, firstIdx))} – ${FMT_SHORT.format(addDays(info.start, lastIdx))}`;
     const isCurrent = ti >= firstIdx && ti <= lastIdx;
     return `
@@ -665,12 +709,10 @@ function renderScheduleTab() {
 /* ----- Progress tab ----- */
 
 function weeklyTotals(info) {
-  let idx = 0;
-  return info.plan.weeks.map((w, wi) => {
-    const firstIdx = idx;
+  return info.weeks.map((w) => {
     let miles = 0, runs = 0, logged = 0;
-    for (const _day of w.days) {
-      const e = entryFor(idx++);
+    for (let i = w.firstIdx; i <= w.lastIdx; i++) {
+      const e = entryFor(i);
       if (e && e.status) logged++;
       if (e && (e.status === "completed" || e.status === "modified") && e.distance) {
         miles += Number(e.distance);
@@ -678,7 +720,7 @@ function weeklyTotals(info) {
       }
     }
     return {
-      week: wi + 1, firstIdx, lastIdx: idx - 1,
+      week: w.week, firstIdx: w.firstIdx, lastIdx: w.lastIdx,
       miles: Math.round(miles * 10) / 10, runs, logged, dayCount: w.days.length,
     };
   });
@@ -801,6 +843,31 @@ function drawMileageChart(info, totals) {
 
 /* ----- Plans tab ----- */
 
+/* pdf.js is vendored and loaded on demand — only when a PDF is uploaded. */
+let pdfjsPromise = null;
+
+async function extractPdfPages(arrayBuffer) {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import("./vendor/pdf.min.mjs").then((mod) => {
+      mod.GlobalWorkerOptions.workerSrc = "js/vendor/pdf.worker.min.mjs";
+      return mod;
+    });
+  }
+  const pdfjs = await pdfjsPromise;
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    pages.push({
+      items: tc.items
+        .filter((i) => i.str && i.str.trim())
+        .map((i) => ({ x: i.transform[4], y: i.transform[5], str: i.str })),
+    });
+  }
+  return pages;
+}
+
 function renderPlans() {
   const el = $("#tab-plans");
   const userPlans = livePlans()
@@ -829,13 +896,14 @@ function renderPlans() {
   el.innerHTML = `
     <div class="settings-card">
       <h2>Upload a training plan</h2>
-      <p>Upload a <strong>markdown table</strong> (one row per week, one column per day —
-      the format of the built-in plan, <a href="plans/swap-12-week-marathon.md" target="_blank" rel="noopener">example</a>)
+      <p>Upload a <strong>PDF</strong> (a grid-style plan — one row per week, one column per
+      day), a <strong>markdown table</strong> in the same layout
+      (<a href="plans/swap-12-week-marathon.md" target="_blank" rel="noopener">example</a>),
       or <strong>JSON</strong> (<a href="docs/plan-format.md" target="_blank" rel="noopener">format reference</a>).
       Day types (rest / easy / workout / long run / race) are detected automatically.</p>
       <div class="inline-controls">
         <label class="btn" for="plan-file">Choose file…</label>
-        <input type="file" id="plan-file" accept=".md,.markdown,.json,.txt" hidden>
+        <input type="file" id="plan-file" accept=".pdf,.md,.markdown,.json,.txt" hidden>
         <span class="hint">or paste the plan text below</span>
       </div>
       <textarea id="plan-paste" rows="4" placeholder="| | Mon | Tue | … |&#10;| --- | --- | --- | … |&#10;| Week 1 | Rest | 5 mi easy | … |"></textarea>
@@ -853,27 +921,50 @@ function renderPlans() {
     </div>`;
 
   const msg = $("#plan-upload-msg");
+  const storePlan = (parsed) => {
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    state.plans[id] = { id, ...parsed, createdAt: now, updatedAt: now };
+    saveState();
+    pendingPlanId = id;
+    render();
+    const addedMsg = $("#plan-upload-msg");
+    addedMsg.textContent = `Added “${parsed.name.replace(/&[^;]+;/g, "")}” — use “Use this plan” below to schedule it.`;
+    addedMsg.classList.remove("sync-error");
+  };
+  const showUploadError = (e) => {
+    const el = $("#plan-upload-msg");
+    el.textContent = e.message || "Couldn't read that file.";
+    el.classList.add("sync-error");
+  };
   const addPlan = (filename, text) => {
     try {
-      const parsed = PlanParser.parsePlanFile(filename, text);
-      const now = new Date().toISOString();
-      const id = crypto.randomUUID();
-      state.plans[id] = { id, ...parsed, createdAt: now, updatedAt: now };
-      saveState();
-      pendingPlanId = id;
-      render();
-      const addedMsg = $("#plan-upload-msg");
-      addedMsg.textContent = `Added “${parsed.name.replace(/&[^;]+;/g, "")}” — use “Use this plan” below to schedule it.`;
-      addedMsg.classList.remove("sync-error");
+      storePlan(PlanParser.parsePlanFile(filename, text));
     } catch (e) {
-      msg.textContent = e.message;
-      msg.classList.add("sync-error");
+      showUploadError(e);
+    }
+  };
+  const addPdfPlan = async (file) => {
+    msg.classList.remove("sync-error");
+    msg.textContent = "Reading PDF…";
+    try {
+      const pages = await extractPdfPages(await file.arrayBuffer());
+      const fallbackName = file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || "Uploaded plan";
+      storePlan(PlanParser.parsePdfItems(pages, fallbackName));
+    } catch (e) {
+      showUploadError(e);
     }
   };
 
   $("#plan-file").addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
-    if (file) addPlan(file.name, await file.text());
+    if (file) {
+      if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+        await addPdfPlan(file);
+      } else {
+        addPlan(file.name, await file.text());
+      }
+    }
     ev.target.value = "";
   });
   $("#add-plan").addEventListener("click", () => {

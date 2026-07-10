@@ -1,10 +1,21 @@
 # Training plan formats
 
-The app accepts two upload formats. Either way, a plan is a grid of weeks ×
+The app accepts three upload formats. Either way, a plan is a grid of weeks ×
 days; when you schedule it, the app lays those days onto the calendar — either
-ending on your goal race date or starting on a date you pick.
+ending on your goal race date or starting on a date you pick. For 7-day plans,
+weeks align to the calendar (day 1 lands on the plan's first weekday — Monday
+for Mon–Sun plans).
 
-## 1. Markdown table
+## 1. PDF
+
+Upload a **grid-style plan PDF**: a table with a weekday header row
+(Mon/Tue/… — full names like "Monday" work too), one row per week labeled
+"Week 1", "Week 2", … in the first column, and one column per day. Multi-page
+PDFs work. The importer reconstructs the grid from the text layout, so PDFs
+that are scans/photos (no selectable text) or free-form prose won't import —
+paste those as a markdown table instead.
+
+## 2. Markdown table
 
 One row per week, one column per day. This is the format of the built-in SWAP
 plan (`plans/swap-12-week-marathon.md` in this repo is a full example):
@@ -26,7 +37,7 @@ plan (`plans/swap-12-week-marathon.md` in this repo is a full example):
   **workout** (tempo/intervals/reps), **long run** (leading mileage ≥ 12 or
   "long run"), and **race** (last day mentioning a race, or "race day").
 
-## 2. JSON
+## 3. JSON
 
 The explicit format — use it when you want full control over types and titles:
 
