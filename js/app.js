@@ -337,6 +337,7 @@ async function logout() {
 let syncStatus = { error: null, lastSync: null };
 let syncInProgress = false;
 let syncTimer = null;
+let pushPending = false;
 
 function ts(v) {
   return v ? Date.parse(v) || 0 : 0;
@@ -394,6 +395,7 @@ async function doSync() {
     if (putRes.status === 401) throw { loggedOut: true };
     if (!putRes.ok) throw new Error(`server error (${putRes.status})`);
     syncStatus = { error: null, lastSync: new Date().toISOString() };
+    pushPending = false;
     offline = false;
   } catch (e) {
     if (e && e.loggedOut) {
@@ -411,11 +413,29 @@ async function doSync() {
 
 function schedulePush() {
   if (!user) return;
+  pushPending = true;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(async () => {
     await doSync();
     renderCountdownChip();
   }, 1500);
+}
+
+/* If the tab is closed/hidden before the debounced push fires, flush the
+ * state with a keepalive request so the write survives page teardown.
+ * (Best effort: keepalive bodies are size-capped; the per-user local cache
+ * still merges everything up on the next visit.) */
+function flushPendingPush() {
+  if (!user || !pushPending || syncInProgress) return;
+  try {
+    fetch("/api/data", {
+      method: "PUT",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    }).catch(() => {});
+    pushPending = false;
+  } catch { /* over the keepalive size cap — next visit syncs it */ }
 }
 
 /* ---------- rendering ---------- */
@@ -476,13 +496,13 @@ function renderCountdownChip() {
   chip.hidden = false;
   const remaining = info.len - 1 - info.todayIdx;
   if (info.isRaceGoal) {
-    if (remaining > 0) chip.textContent = `🏁 ${remaining} day${remaining === 1 ? "" : "s"} to race day`;
-    else if (remaining === 0) chip.textContent = "🏁 RACE DAY!";
-    else chip.textContent = "🏁 Race complete";
+    if (remaining > 0) chip.textContent = `T-${remaining} day${remaining === 1 ? "" : "s"} to race day`;
+    else if (remaining === 0) chip.textContent = "RACE DAY";
+    else chip.textContent = "race complete";
   } else {
-    if (info.todayIdx < 0) chip.textContent = `📅 starts ${FMT_SHORT.format(info.start)}`;
-    else if (info.todayIdx >= info.len) chip.textContent = "✅ Plan complete";
-    else chip.textContent = `📅 Day ${info.todayIdx + 1} of ${info.len}`;
+    if (info.todayIdx < 0) chip.textContent = `starts ${FMT_SHORT.format(info.start)}`;
+    else if (info.todayIdx >= info.len) chip.textContent = "plan complete";
+    else chip.textContent = `Day ${info.todayIdx + 1} of ${info.len}`;
   }
 }
 
@@ -694,7 +714,7 @@ function renderToday() {
   } else if (ti >= info.len) {
     el.innerHTML = `
       <div class="notice">
-        <h2>🎉 Plan complete!</h2>
+        <h2>Plan complete</h2>
         <p><strong>${esc(info.sched.name)}</strong> ended ${FMT_LONG.format(info.end)}.
         Your journal is saved in the Schedule and Progress tabs, and you can set up the
         next block from Settings → New schedule.</p>
@@ -1396,14 +1416,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (ev.target === ev.currentTarget) closeModal(); // backdrop click
   });
 
-  // pull latest data whenever the tab regains focus
+  // pull latest data whenever the tab regains focus; flush unpushed
+  // changes when it's hidden or being torn down
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && user && !$("#day-modal").open) {
+    if (document.hidden) {
+      flushPendingPush();
+    } else if (user && !$("#day-modal").open) {
       doSync().then(() => {
         if (!$("#day-modal").open) render();
       });
     }
   });
+  window.addEventListener("pagehide", flushPendingPush);
 
   boot();
 });

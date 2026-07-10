@@ -1,4 +1,4 @@
-# Marathon Training Tracker 🏃
+# MARATHON//TRAINER
 
 A multi-user web app for running training plans. Sign in, pick or upload a
 training plan, anchor it to the calendar — working backward from your goal race
@@ -34,8 +34,12 @@ went to track your progress.
 - **Cross-device sync** — changes push automatically and merge by
   most-recent-edit per journal entry (deletions propagate too), with offline
   support via a per-user local cache.
-- **Backup** — export/import all your data as JSON. Light and dark mode,
-  mobile friendly.
+- **Backup** — export/import all your data as JSON. Mobile friendly.
+- **NEON//GRID design system** — the UI implements the owner's personal
+  design system (cyberpunk/synthwave: near-black canvas, neon accents as
+  light sources, Orbitron/Rajdhani/Share Tech Mono type, sharp corners,
+  glow instead of shadows). Dark-only by design; fonts are self-hosted in
+  `fonts/` so the app has no external runtime dependencies.
 
 ## Running it
 
