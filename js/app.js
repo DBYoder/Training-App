@@ -307,9 +307,14 @@ async function handleAuthSubmit(ev) {
     localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
     state = loadCache() || emptyState();
     migrateLegacyState();
-    activeTab = "today";
+    // first-time users (no schedules) go straight to setup in Settings;
+    // re-evaluate after sync in case another device already created one
+    const autoSetup = !liveSchedules().length;
+    activeTab = autoSetup ? "settings" : "today";
     render();
     await doSync();
+    if (!liveSchedules().length) activeTab = "settings";
+    else if (autoSetup && activeTab === "settings") activeTab = "today";
     render();
   } catch {
     errEl.textContent = "Can't reach the server — check your connection.";
@@ -481,6 +486,29 @@ function renderCountdownChip() {
   }
 }
 
+/* ----- plan importing (shared by the Plans tab and the schedule form) ----- */
+
+function storeParsedPlan(parsed) {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  state.plans[id] = { id, ...parsed, createdAt: now, updatedAt: now };
+  saveState();
+  return state.plans[id];
+}
+
+async function importPlanFile(file) {
+  if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+    const pages = await extractPdfPages(await file.arrayBuffer());
+    const fallbackName = file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || "Uploaded plan";
+    return storeParsedPlan(PlanParser.parsePdfItems(pages, fallbackName));
+  }
+  return storeParsedPlan(PlanParser.parsePlanFile(file.name, await file.text()));
+}
+
+function plainPlanName(name) {
+  return name.replace(/&[^;]+;/g, "");
+}
+
 /* ----- onboarding / new-schedule form ----- */
 
 function planOptionsHTML(selectedId) {
@@ -498,6 +526,11 @@ function scheduleFormHTML() {
       <label>Training plan
         <select name="planId">${planOptionsHTML(pendingPlanId)}</select>
       </label>
+      <div class="inline-controls form-upload-row">
+        <label class="btn">Upload your own plan (PDF, Markdown, JSON)…<input
+          type="file" class="form-plan-file" accept=".pdf,.md,.markdown,.json,.txt" hidden></label>
+        <span class="form-upload-msg hint"></span>
+      </div>
       <label>Schedule name <span class="hint-inline">(optional)</span>
         <input type="text" name="name" maxlength="60" placeholder="e.g. Chicago Marathon 2026">
       </label>
@@ -547,6 +580,26 @@ function wireScheduleForm(container) {
   };
   form.addEventListener("input", updateLabels);
   updateLabels();
+
+  $(".form-plan-file", form).addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const msgEl = $(".form-upload-msg", form);
+    msgEl.classList.remove("sync-error");
+    msgEl.textContent = "Reading…";
+    try {
+      const plan = await importPlanFile(file);
+      pendingPlanId = plan.id;
+      form.planId.innerHTML = planOptionsHTML(plan.id);
+      msgEl.textContent = `Added “${plainPlanName(plan.name)}” — selected above.`;
+      updateLabels();
+    } catch (e) {
+      msgEl.textContent = e.message || "Couldn't read that file.";
+      msgEl.classList.add("sync-error");
+    }
+    ev.target.value = "";
+  });
+
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     const plan = getPlan(form.planId.value);
@@ -921,15 +974,11 @@ function renderPlans() {
     </div>`;
 
   const msg = $("#plan-upload-msg");
-  const storePlan = (parsed) => {
-    const now = new Date().toISOString();
-    const id = crypto.randomUUID();
-    state.plans[id] = { id, ...parsed, createdAt: now, updatedAt: now };
-    saveState();
-    pendingPlanId = id;
+  const announce = (plan) => {
+    pendingPlanId = plan.id;
     render();
     const addedMsg = $("#plan-upload-msg");
-    addedMsg.textContent = `Added “${parsed.name.replace(/&[^;]+;/g, "")}” — use “Use this plan” below to schedule it.`;
+    addedMsg.textContent = `Added “${plainPlanName(plan.name)}” — use “Use this plan” below to schedule it.`;
     addedMsg.classList.remove("sync-error");
   };
   const showUploadError = (e) => {
@@ -937,32 +986,16 @@ function renderPlans() {
     el.textContent = e.message || "Couldn't read that file.";
     el.classList.add("sync-error");
   };
-  const addPlan = (filename, text) => {
-    try {
-      storePlan(PlanParser.parsePlanFile(filename, text));
-    } catch (e) {
-      showUploadError(e);
-    }
-  };
-  const addPdfPlan = async (file) => {
-    msg.classList.remove("sync-error");
-    msg.textContent = "Reading PDF…";
-    try {
-      const pages = await extractPdfPages(await file.arrayBuffer());
-      const fallbackName = file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || "Uploaded plan";
-      storePlan(PlanParser.parsePdfItems(pages, fallbackName));
-    } catch (e) {
-      showUploadError(e);
-    }
-  };
 
   $("#plan-file").addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
     if (file) {
-      if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
-        await addPdfPlan(file);
-      } else {
-        addPlan(file.name, await file.text());
+      msg.classList.remove("sync-error");
+      msg.textContent = "Reading…";
+      try {
+        announce(await importPlanFile(file));
+      } catch (e) {
+        showUploadError(e);
       }
     }
     ev.target.value = "";
@@ -974,7 +1007,11 @@ function renderPlans() {
       msg.classList.add("sync-error");
       return;
     }
-    addPlan("pasted plan", text);
+    try {
+      announce(storeParsedPlan(PlanParser.parsePlanFile("pasted plan", text)));
+    } catch (e) {
+      showUploadError(e);
+    }
   });
 
   $$(".use-plan", el).forEach((b) => {
@@ -1037,7 +1074,8 @@ function renderSettings() {
     ? `<span class="sync-error">⚠ Offline (${esc(syncStatus.error)}) — changes are saved on this device and will sync when the server is reachable.</span>`
     : (syncStatus.lastSync ? `Synced ${new Date(syncStatus.lastSync).toLocaleString()}` : "Not synced yet this session");
 
-  el.innerHTML = `
+  const firstRun = !scheds.length;
+  const accountCard = `
     <div class="settings-card">
       <h2>Account</h2>
       <p>Signed in as <strong>${esc(user.email)}</strong>. Your plans, schedules, and
@@ -1047,13 +1085,20 @@ function renderSettings() {
         <button id="sync-now" class="btn">Sync now</button>
         <button id="logout" class="btn">Log out</button>
       </div>
-    </div>
-    <div class="settings-card">
-      <details id="new-schedule-details" ${scheds.length ? "" : "open"}>
-        <summary><h2 class="summary-h2">New schedule</h2></summary>
+    </div>`;
+  const newScheduleCard = `
+    <div class="settings-card ${firstRun ? "is-first-run" : ""}">
+      <details id="new-schedule-details" ${firstRun ? "open" : ""}>
+        <summary><h2 class="summary-h2">${firstRun ? "Welcome! Set up your training schedule" : "New schedule"}</h2></summary>
+        ${firstRun ? `<p>Three quick steps: pick the built-in marathon plan (or upload your
+          own), choose how it lands on the calendar, and enter your race date — then the
+          Today tab shows every day's workout.</p>` : ""}
         ${scheduleFormHTML()}
       </details>
-    </div>
+    </div>`;
+
+  el.innerHTML = `
+    ${firstRun ? newScheduleCard + accountCard : accountCard + newScheduleCard}
     <div class="settings-card">
       <h2>My schedules</h2>
       ${scheds.length ? `<ul class="plan-list">${scheds.map(schedRow).join("")}</ul>`
@@ -1304,9 +1349,13 @@ async function boot() {
   }
   state = loadCache() || emptyState();
   migrateLegacyState();
+  const autoSetup = !liveSchedules().length;
+  if (autoSetup) activeTab = "settings"; // straight to setup
   render();
   if (!offline) {
     await doSync();
+    if (!liveSchedules().length) activeTab = "settings";
+    else if (autoSetup && activeTab === "settings") activeTab = "today";
     render();
   }
 }

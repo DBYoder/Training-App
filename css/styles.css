@@ -449,6 +449,8 @@ textarea { width: 100%; resize: vertical; }
 
 .summary-h2 { display: inline; font-size: 1.05rem; margin: 0; }
 #new-schedule-details summary { cursor: pointer; }
+.settings-card.is-first-run { border-color: var(--series-1); }
+.form-upload-row { margin: -4px 0 12px; }
 
 /* ---------- modal ---------- */
 
