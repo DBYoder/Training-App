@@ -1,6 +1,10 @@
 # Training plan formats
 
-The app accepts three upload formats. Either way, a plan is a grid of weeks ×
+You can also skip files entirely: **Plans → Build a plan** writes a plan
+directly in the app (one text box per day, add/duplicate weeks, blank days
+become rest days), and saved plans stay editable there.
+
+For uploads, the app accepts three formats. Either way, a plan is a grid of weeks ×
 days; when you schedule it, the app lays those days onto the calendar — either
 ending on your goal race date or starting on a date you pick. For 7-day plans,
 weeks align to the calendar (day 1 lands on the plan's first weekday — Monday

@@ -25,20 +25,18 @@ const TYPE_LABELS = {
   race: "Race day",
 };
 
-const BUILTIN_PLAN = {
-  id: "builtin-swap12",
-  name: "SWAP 12-Week Advanced Marathon Plan",
-  builtin: true,
-  htmlDetails: true,
-  dayHeaders: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-  weeks: PLAN_WEEKS,
-};
+/* The SWAP plan used to ship as a built-in for every user. It no longer
+ * does — new accounts start with an empty plan library — but accounts whose
+ * schedules already reference the old built-in id get a real copy written
+ * into their library so nothing breaks. */
+const LEGACY_SWAP_ID = "builtin-swap12";
 
 let user = null;          // {id, email} when signed in
 let offline = false;      // true when running from cache without a server
 let authMode = "login";
 let activeTab = "today";
 let pendingPlanId = null; // preselect in the new-schedule form
+let builder = null;       // in-app plan builder state, or null
 let state = emptyState();
 
 function emptyState() {
@@ -87,7 +85,7 @@ function migrateLegacyState() {
     state.schedules[id] = {
       id,
       name: "My marathon (imported)",
-      planId: BUILTIN_PLAN.id,
+      planId: LEGACY_SWAP_ID,
       mode: "race",
       anchorDate: legacy.raceDate,
       createdAt: now,
@@ -147,9 +145,27 @@ function liveSchedules() {
 }
 
 function getPlan(planId) {
-  if (planId === BUILTIN_PLAN.id) return BUILTIN_PLAN;
   const p = state.plans[planId];
   return p && !p.deleted ? p : null;
+}
+
+/* Give pre-existing accounts a real copy of the formerly built-in SWAP plan
+ * if any of their schedules still reference it. */
+function materializeLegacySwapPlan() {
+  const referenced = Object.values(state.schedules)
+    .some((s) => !s.deleted && s.planId === LEGACY_SWAP_ID);
+  if (!referenced || getPlan(LEGACY_SWAP_ID)) return;
+  const now = new Date().toISOString();
+  state.plans[LEGACY_SWAP_ID] = {
+    id: LEGACY_SWAP_ID,
+    name: "SWAP 12-Week Advanced Marathon Plan",
+    dayHeaders: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    htmlDetails: true,
+    weeks: PLAN_WEEKS,
+    createdAt: now,
+    updatedAt: now,
+  };
+  saveState(false);
 }
 
 function activeSchedule() {
@@ -307,6 +323,7 @@ async function handleAuthSubmit(ev) {
     localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
     state = loadCache() || emptyState();
     migrateLegacyState();
+    materializeLegacySwapPlan();
     // first-time users (no schedules) go straight to setup in Settings;
     // re-evaluate after sync in case another device already created one
     const autoSetup = !liveSchedules().length;
@@ -387,6 +404,7 @@ async function doSync() {
       state = mergeStates(state, remote.state);
       saveState(false);
     }
+    materializeLegacySwapPlan();
     const putRes = await fetch("/api/data", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -532,7 +550,11 @@ function plainPlanName(name) {
 /* ----- onboarding / new-schedule form ----- */
 
 function planOptionsHTML(selectedId) {
-  const options = [BUILTIN_PLAN, ...livePlans()];
+  const options = livePlans()
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  if (!options.length) {
+    return '<option value="">no plans yet — upload or build one below</option>';
+  }
   return options.map((p) => {
     const days = p.weeks.reduce((s, w) => s + w.days.length, 0);
     return `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>
@@ -547,8 +569,9 @@ function scheduleFormHTML() {
         <select name="planId">${planOptionsHTML(pendingPlanId)}</select>
       </label>
       <div class="inline-controls form-upload-row">
-        <label class="btn">Upload your own plan (PDF, Markdown, JSON)…<input
+        <label class="btn">Upload a plan (PDF, Markdown, JSON)…<input
           type="file" class="form-plan-file" accept=".pdf,.md,.markdown,.json,.txt" hidden></label>
+        <button type="button" class="btn form-build-plan">build one from scratch</button>
         <span class="form-upload-msg hint"></span>
       </div>
       <label>Schedule name <span class="hint-inline">(optional)</span>
@@ -584,6 +607,8 @@ function wireScheduleForm(container) {
       form.anchorDate.value = toISODate(todayNoon());
     }
     const plan = getPlan(form.planId.value);
+    form.querySelector('button[type="submit"]').disabled = !plan;
+    if (!plan) $(".anchor-preview", form).textContent = "";
     if (plan && form.anchorDate.value) {
       const r = resolveSchedule(plan, form.mode.value, form.anchorDate.value);
       const notes = [];
@@ -600,6 +625,8 @@ function wireScheduleForm(container) {
   };
   form.addEventListener("input", updateLabels);
   updateLabels();
+
+  $(".form-build-plan", form).addEventListener("click", () => openBuilder(null));
 
   $(".form-plan-file", form).addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
@@ -648,9 +675,9 @@ function renderOnboarding(el, message) {
   el.innerHTML = `
     <div class="setup-card">
       <h2>${message || "Set up your training schedule"}</h2>
-      <p>Pick a plan and anchor it to the calendar — either working backward from your
-      goal race, or starting today. You can upload more plans in the
-      <a href="#" class="goto-plans">Plans tab</a>.</p>
+      <p>Upload a training plan (or build one from scratch), then anchor it to the
+      calendar — either working backward from your goal race, or starting today.
+      Manage your plan library in the <a href="#" class="goto-plans">Plans tab</a>.</p>
       ${scheduleFormHTML()}
     </div>`;
   wireScheduleForm(el);
@@ -943,6 +970,8 @@ async function extractPdfPages(arrayBuffer) {
 
 function renderPlans() {
   const el = $("#tab-plans");
+  if (builder) return renderBuilder(el);
+  el.oninput = null; // clear any builder input handler
   const userPlans = livePlans()
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const schedulesByPlan = {};
@@ -957,11 +986,12 @@ function renderPlans() {
       <li class="plan-row" data-plan="${p.id}">
         <div class="plan-row-main">
           <strong>${p.name}</strong>
-          <span class="hint">${p.weeks.length} weeks · ${days} days${p.builtin ? " · built-in" : ""}${used ? ` · used by ${used} schedule${used === 1 ? "" : "s"}` : ""}</span>
+          <span class="hint">${p.weeks.length} weeks · ${days} days${used ? ` · used by ${used} schedule${used === 1 ? "" : "s"}` : ""}</span>
         </div>
         <div class="plan-row-actions">
           <button class="btn use-plan" data-plan="${p.id}">Use this plan</button>
-          ${p.builtin ? "" : `<button class="btn danger delete-plan" data-plan="${p.id}">Delete</button>`}
+          <button class="btn edit-plan" data-plan="${p.id}">Edit</button>
+          <button class="btn danger delete-plan" data-plan="${p.id}">Delete</button>
         </div>
       </li>`;
   };
@@ -986,11 +1016,16 @@ function renderPlans() {
       </div>
     </div>
     <div class="settings-card">
+      <h2>Build your own</h2>
+      <p>Write a plan directly in the app — one text box per day, week by week.
+      Day types (rest / easy / workout / long run / race) are detected from what you write.</p>
+      <button id="open-builder" class="btn primary">Build a plan</button>
+    </div>
+    <div class="settings-card">
       <h2>Plan library</h2>
-      <ul class="plan-list">
-        ${planRow(BUILTIN_PLAN)}
-        ${userPlans.map(planRow).join("")}
-      </ul>
+      ${userPlans.length
+        ? `<ul class="plan-list">${userPlans.map(planRow).join("")}</ul>`
+        : '<p class="hint">no plans yet — upload one above or build one from scratch.</p>'}
     </div>`;
 
   const msg = $("#plan-upload-msg");
@@ -1046,6 +1081,10 @@ function renderPlans() {
       }
     });
   });
+  $("#open-builder").addEventListener("click", () => openBuilder(null));
+  $$(".edit-plan", el).forEach((b) => {
+    b.addEventListener("click", () => openBuilder(getPlan(b.dataset.plan)));
+  });
   $$(".delete-plan", el).forEach((b) => {
     b.addEventListener("click", () => {
       const id = b.dataset.plan;
@@ -1059,6 +1098,145 @@ function renderPlans() {
       saveState();
       render();
     });
+  });
+}
+
+/* ----- in-app plan builder ----- */
+
+const DEFAULT_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/* Reconstruct editable text from a stored day (details hold sanitized HTML). */
+function dayCellText(day) {
+  return day.details.map((html) => {
+    const withLinks = String(html)
+      .replace(/<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g, "[$2]($1)");
+    const tmp = document.createElement("div");
+    tmp.innerHTML = withLinks;
+    return tmp.textContent;
+  }).join(" ");
+}
+
+function openBuilder(plan) {
+  builder = plan
+    ? {
+        name: plainPlanName(plan.name),
+        dayHeaders: plan.dayHeaders?.length ? plan.dayHeaders.slice() : DEFAULT_HEADERS.slice(),
+        rows: plan.sourceCells
+          ? plan.sourceCells.map((r) => r.slice())
+          : plan.weeks.map((w) => w.days.map((d) => (d.type === "rest" && d.details.join() === "Rest." ? "" : dayCellText(d)))),
+        editingPlanId: plan.id,
+      }
+    : {
+        name: "",
+        dayHeaders: DEFAULT_HEADERS.slice(),
+        rows: [Array(7).fill("")],
+        editingPlanId: null,
+      };
+  activeTab = "plans";
+  render();
+}
+
+function renderBuilder(el) {
+  const dpw = builder.dayHeaders.length;
+  const weekEditor = (row, wi) => `
+    <fieldset class="builder-week">
+      <legend>week ${wi + 1}</legend>
+      <div class="builder-grid">
+        ${builder.dayHeaders.map((h, di) => `
+          <label>${h}
+            <textarea rows="3" data-w="${wi}" data-d="${di}"
+              placeholder="rest">${esc(row[di] || "")}</textarea>
+          </label>`).join("")}
+      </div>
+    </fieldset>`;
+
+  el.innerHTML = `
+    <div class="settings-card">
+      <div class="builder-head">
+        <h2>${builder.editingPlanId ? "Edit plan" : "Build a plan"}</h2>
+        <button id="builder-back" class="btn">← back to library</button>
+      </div>
+      <label class="builder-name">Plan name
+        <input type="text" id="builder-name" maxlength="120"
+               placeholder="e.g. My 10-Week Base Block" value="${esc(builder.name)}">
+      </label>
+      <div id="builder-weeks">${builder.rows.map(weekEditor).join("")}</div>
+      <div class="inline-controls">
+        <button id="builder-add-week" class="btn">+ add week</button>
+        <button id="builder-dup-week" class="btn">duplicate last week</button>
+        ${builder.rows.length > 1 ? '<button id="builder-del-week" class="btn danger">remove last week</button>' : ""}
+      </div>
+      <p class="hint">Leave a day blank for a rest day. Day types are detected from the
+      text — “6 x 800 at 10k effort” reads as a workout, “Long run: 16 mi” as a long run.
+      Links like [name](https://…) stay clickable.</p>
+      <div class="inline-controls">
+        <button id="builder-save" class="btn primary">Save plan</button>
+        <span id="builder-msg" class="hint"></span>
+      </div>
+    </div>`;
+
+  // oninput (not addEventListener) so re-renders replace rather than stack
+  el.oninput = (ev) => {
+    if (ev.target.matches(".builder-week textarea")) {
+      builder.rows[Number(ev.target.dataset.w)][Number(ev.target.dataset.d)] = ev.target.value;
+    } else if (ev.target.id === "builder-name") {
+      builder.name = ev.target.value;
+    }
+  };
+
+  $("#builder-back", el).addEventListener("click", () => {
+    builder = null;
+    render();
+  });
+  $("#builder-add-week", el).addEventListener("click", () => {
+    builder.rows.push(Array(dpw).fill(""));
+    render();
+  });
+  $("#builder-dup-week", el).addEventListener("click", () => {
+    builder.rows.push(builder.rows[builder.rows.length - 1].slice());
+    render();
+  });
+  const delBtn = $("#builder-del-week", el);
+  if (delBtn) {
+    delBtn.addEventListener("click", () => {
+      const last = builder.rows[builder.rows.length - 1];
+      if (last.some((c) => c.trim()) && !confirm("The last week has workouts in it — remove it anyway?")) return;
+      builder.rows.pop();
+      render();
+    });
+  }
+
+  $("#builder-save", el).addEventListener("click", () => {
+    const msg = $("#builder-msg");
+    msg.classList.remove("sync-error");
+    try {
+      const parsed = PlanParser.buildPlan(builder.name, builder.rows, builder.dayHeaders);
+      const sourceCells = builder.rows.map((r) => r.slice());
+      if (builder.editingPlanId) {
+        const inUse = liveSchedules().filter((s) => s.planId === builder.editingPlanId);
+        if (inUse.length &&
+            !confirm(`This plan is used by: ${inUse.map((s) => s.name).join(", ")}. Saving updates those schedules — journal entries stay attached by day position. Continue?`)) {
+          return;
+        }
+        const existing = state.plans[builder.editingPlanId];
+        state.plans[builder.editingPlanId] = {
+          id: builder.editingPlanId,
+          ...parsed,
+          sourceCells,
+          createdAt: existing?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        pendingPlanId = builder.editingPlanId;
+        saveState();
+      } else {
+        pendingPlanId = storeParsedPlan({ ...parsed, sourceCells }).id;
+      }
+      builder = null;
+      render();
+    } catch (e) {
+      msg.textContent = e.message;
+      msg.classList.add("sync-error");
+    }
   });
 }
 
@@ -1110,9 +1288,9 @@ function renderSettings() {
     <div class="settings-card ${firstRun ? "is-first-run" : ""}">
       <details id="new-schedule-details" ${firstRun ? "open" : ""}>
         <summary><h2 class="summary-h2">${firstRun ? "Welcome! Set up your training schedule" : "New schedule"}</h2></summary>
-        ${firstRun ? `<p>Three quick steps: pick the built-in marathon plan (or upload your
-          own), choose how it lands on the calendar, and enter your race date — then the
-          Today tab shows every day's workout.</p>` : ""}
+        ${firstRun ? `<p>Three quick steps: upload your training plan (PDF, Markdown, or
+          JSON) or build one from scratch, choose how it lands on the calendar, and enter
+          your race date — then the Today tab shows every day's workout.</p>` : ""}
         ${scheduleFormHTML()}
       </details>
     </div>`;
@@ -1193,6 +1371,7 @@ function renderSettings() {
       }
       if (!confirm("Merge this backup into your current data?")) return;
       state = mergeStates(state, { ...emptyState(), ...imported });
+      materializeLegacySwapPlan();
       saveState();
       render();
       alert("Import complete!");
@@ -1369,6 +1548,7 @@ async function boot() {
   }
   state = loadCache() || emptyState();
   migrateLegacyState();
+  materializeLegacySwapPlan();
   const autoSetup = !liveSchedules().length;
   if (autoSetup) activeTab = "settings"; // straight to setup
   render();

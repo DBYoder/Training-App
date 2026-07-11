@@ -302,6 +302,28 @@
     return { name, weeks, dayHeaders, htmlDetails: true };
   }
 
+  /* Build a plan from raw day-cell text entered in the in-app builder.
+   * rows: [[cellText per day] per week]. Empty cells become rest days;
+   * types/titles are classified the same way as uploaded plans. */
+  function buildPlan(name, rows, dayHeaders) {
+    const headers = (Array.isArray(dayHeaders) && dayHeaders.length
+      ? dayHeaders
+      : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    ).map((h) => escapeHtml(String(h).slice(0, 12)));
+    if (headers.length < 1 || headers.length > MAX_DAYS_PER_WEEK) {
+      throw new Error(`Weeks need 1–${MAX_DAYS_PER_WEEK} days.`);
+    }
+    if (!Array.isArray(rows) || !rows.length) throw new Error("Add at least one week.");
+    if (rows.length > MAX_WEEKS) throw new Error(`Too many weeks (max ${MAX_WEEKS}).`);
+    if (rows.every((r) => r.every((c) => !String(c || "").trim()))) {
+      throw new Error("Every day is blank — write at least one workout.");
+    }
+    const cells = rows.map((r) => headers.map((_, i) => String(r[i] ?? "")));
+    const weeks = buildWeeksFromCells(cells, headers);
+    const cleanName = escapeHtml(String(name || "").trim().slice(0, 120)) || "My plan";
+    return { name: cleanName, weeks, dayHeaders: headers, htmlDetails: true };
+  }
+
   function parsePlanFile(filename, text) {
     const fallbackName = (filename || "Uploaded plan")
       .replace(/\.(md|markdown|json|txt)$/i, "")
@@ -314,5 +336,5 @@
     return parseMarkdownPlan(trimmed, fallbackName);
   }
 
-  exportsTarget.PlanParser = { parsePlanFile, parseMarkdownPlan, parseJsonPlan, parsePdfItems, escapeHtml };
+  exportsTarget.PlanParser = { parsePlanFile, parseMarkdownPlan, parseJsonPlan, parsePdfItems, buildPlan, escapeHtml };
 })(typeof module !== "undefined" && module.exports ? module.exports : window);

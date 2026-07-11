@@ -10,11 +10,14 @@ went to track your progress.
 - **Accounts** — email + password sign-in; every user's plans, schedules, and
   journals are stored server-side, so you can sign in from any device and share
   the app with training partners.
-- **Plan library** — the SWAP 12-Week Advanced Marathon Plan is built in, and
-  you can upload your own plans as a **PDF** (grid-style plans; the table is
-  reconstructed from the text layout), a markdown table, or JSON
-  (see [docs/plan-format.md](docs/plan-format.md)). Day types
-  (rest / easy / workout / long run / race) are detected automatically.
+- **Plan library** — every user starts with an empty library (no pre-imported
+  plan) and fills it their way: upload a **PDF** (grid-style plans; the table
+  is reconstructed from the text layout), a markdown table, or JSON
+  (see [docs/plan-format.md](docs/plan-format.md)) — or **build a plan
+  directly in the app**, one text box per day, with add/duplicate-week
+  controls and editing of saved plans. Day types (rest / easy / workout /
+  long run / race) are detected automatically either way.
+  (`plans/swap-12-week-marathon.md` ships as an example file to upload.)
 - **Flexible scheduling with Monday-aligned weeks** — create any number of
   schedules from any plan: either **work backward from a goal race** or
   **start on a date**. Training weeks always align to real calendar weeks
