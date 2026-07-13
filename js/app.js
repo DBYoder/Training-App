@@ -223,11 +223,45 @@ function resolveSchedule(plan, mode, anchorISO) {
   return { days, weeks, len: days.length, start, end: addDays(start, days.length - 1) };
 }
 
+/* Day swaps ("life happens — long run moves to Sunday"): sched.swaps maps a
+ * calendar slot to the slot whose workout it displays. Journals stay keyed to
+ * the calendar date; only the displayed workout moves. */
+function applySwaps(resolved, sched) {
+  const swaps = sched.swaps || {};
+  if (!Object.keys(swaps).length) return resolved;
+  const days = resolved.days.map((d, i) => {
+    const src = swaps[i];
+    return src !== undefined && resolved.days[src] !== undefined
+      ? { ...resolved.days[src], week: d.week, swappedFrom: Number(src) }
+      : d;
+  });
+  const weeks = resolved.weeks.map((w) => ({
+    ...w,
+    days: days.slice(w.firstIdx, w.lastIdx + 1),
+  }));
+  return { ...resolved, days, weeks };
+}
+
+function swapDays(schedId, i, j) {
+  const sched = state.schedules[schedId];
+  if (!sched || i === j) return;
+  const swaps = { ...(sched.swaps || {}) };
+  const srcI = swaps[i] ?? i;
+  const srcJ = swaps[j] ?? j;
+  swaps[i] = srcJ;
+  swaps[j] = srcI;
+  if (swaps[i] === i) delete swaps[i];
+  if (swaps[j] === j) delete swaps[j];
+  sched.swaps = swaps;
+  sched.updatedAt = new Date().toISOString();
+  saveState();
+}
+
 /* Resolved calendar info for a schedule. */
 function schedInfo(sched) {
   const plan = getPlan(sched.planId);
   if (!plan) return null;
-  const resolved = resolveSchedule(plan, sched.mode, sched.anchorDate);
+  const resolved = applySwaps(resolveSchedule(plan, sched.mode, sched.anchorDate), sched);
   return {
     sched, plan, ...resolved,
     dpw: plan.weeks[0].days.length,
@@ -686,6 +720,46 @@ function printablePlanHTML(plan) {
   </body></html>`;
 }
 
+/* iCalendar export of a schedule: one all-day event per training day, ready
+ * to import into Google/Apple Calendar. RFC 5545: escaped text, CRLF, lines
+ * folded at 75 octets. */
+function scheduleToICS(info) {
+  const icsEsc = (t) => String(t)
+    .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  const dt = (d) => toISODate(d).replace(/-/g, "");
+  const fold = (line) => {
+    const out = [];
+    let rest = line;
+    while (rest.length > 73) {
+      out.push(rest.slice(0, 73));
+      rest = " " + rest.slice(73);
+    }
+    out.push(rest);
+    return out.join("\r\n");
+  };
+  const lines = [
+    "BEGIN:VCALENDAR", "VERSION:2.0",
+    "PRODID:-//marathon-trainer//EN", "CALSCALE:GREGORIAN",
+    fold(`X-WR-CALNAME:${icsEsc(info.sched.name)}`),
+  ];
+  info.days.forEach((day, i) => {
+    const date = addDays(info.start, i);
+    const summary = (day.type === "race" ? "RACE DAY — " : "") + plainPlanName(day.title);
+    lines.push(
+      "BEGIN:VEVENT",
+      fold(`UID:${info.sched.id}-${i}@marathon-trainer`),
+      `DTSTAMP:${dt(todayNoon())}T000000Z`,
+      `DTSTART;VALUE=DATE:${dt(date)}`,
+      `DTEND;VALUE=DATE:${dt(addDays(date, 1))}`,
+      fold(`SUMMARY:${icsEsc(summary)}`),
+      fold(`DESCRIPTION:${icsEsc(dayCellText(day))}`),
+      "END:VEVENT",
+    );
+  });
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n") + "\r\n";
+}
+
 function exportPlanPdf(plan) {
   const w = window.open("", "_blank");
   if (!w) {
@@ -868,6 +942,8 @@ function dayCard(info, i, { heading } = {}) {
       <div class="card-meta">
         <span class="type-tag type-tag-${day.type}">${TYPE_LABELS[day.type]}</span>
         <span class="card-date">${FMT_MED.format(date)} · Week ${day.week} · Day ${i + 1} of ${info.len}</span>
+        ${day.swappedFrom !== undefined
+          ? `<span class="type-tag swap-tag" title="workout moved from ${FMT_MED.format(addDays(info.start, day.swappedFrom))}">⇄ swapped</span>` : ""}
       </div>
       <h3 class="card-title">${day.title}</h3>
       <p class="card-detail">${detailHTML(info.plan, day.details[0])}</p>
@@ -984,10 +1060,31 @@ function renderScheduleTab() {
 
 /* ----- Progress tab ----- */
 
+/* Planned mileage from the day's own text ("8–12 mi easy…"). First mileage
+ * mention only, so interval days that list just a warm-up undercount — the
+ * band is labeled as "listed" mileage, an honest floor rather than a guess. */
+function plannedMilesForDay(day) {
+  if (day.type === "rest") return null;
+  if (day.type === "race") return { lo: 26.2, hi: 26.2 };
+  const text = htmlToPlainText(day.details.join(" "));
+  const m = text.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*mi(?:les?\b|\b)/i);
+  if (!m) return null;
+  const lo = parseFloat(m[1]);
+  const hi = m[2] ? parseFloat(m[2]) : lo;
+  return hi >= lo ? { lo, hi } : { lo: hi, hi: lo };
+}
+
 function weeklyTotals(info) {
   return info.weeks.map((w) => {
-    let miles = 0, runs = 0, logged = 0;
+    let miles = 0, runs = 0, logged = 0, plannedLo = 0, plannedHi = 0, trainingDays = 0;
     for (let i = w.firstIdx; i <= w.lastIdx; i++) {
+      const day = info.days[i];
+      if (day.type !== "rest") trainingDays++; // rest days don't count against you
+      const planned = plannedMilesForDay(day);
+      if (planned) {
+        plannedLo += planned.lo;
+        plannedHi += planned.hi;
+      }
       const e = entryFor(i);
       if (e && e.status) logged++;
       if (e && (e.status === "completed" || e.status === "modified") && e.distance) {
@@ -997,7 +1094,9 @@ function weeklyTotals(info) {
     }
     return {
       week: w.week, firstIdx: w.firstIdx, lastIdx: w.lastIdx,
-      miles: Math.round(miles * 10) / 10, runs, logged, dayCount: w.days.length,
+      miles: Math.round(miles * 10) / 10, runs,
+      logged: Math.min(logged, trainingDays), dayCount: trainingDays,
+      plannedLo: Math.round(plannedLo), plannedHi: Math.round(plannedHi),
     };
   });
 }
@@ -1023,7 +1122,11 @@ function renderProgress() {
 
   const tableRows = totals.map((t) => {
     const range = `${FMT_SHORT.format(addDays(info.start, t.firstIdx))} – ${FMT_SHORT.format(addDays(info.start, t.lastIdx))}`;
-    return `<tr><td>Week ${t.week}</td><td>${range}</td><td class="num">${t.miles || "—"}</td>
+    const planned = t.plannedHi
+      ? (t.plannedLo === t.plannedHi ? `${t.plannedHi}` : `${t.plannedLo}–${t.plannedHi}`)
+      : "—";
+    return `<tr><td>Week ${t.week}</td><td>${range}</td><td class="num">${planned}</td>
+      <td class="num">${t.miles || "—"}</td>
       <td class="num">${t.runs || "—"}</td><td class="num">${t.logged}/${t.dayCount}</td></tr>`;
   }).join("");
 
@@ -1036,19 +1139,27 @@ function renderProgress() {
     </div>
     <div class="chart-card viz-root">
       <h2 class="chart-title">Miles logged per week</h2>
-      <p class="chart-sub">${esc(info.sched.name)} — distances from journal entries marked completed or modified.</p>
+      <p class="chart-sub">${esc(info.sched.name)} — bars are logged miles; the outlined band is the
+      plan's listed mileage range (interval days that list only a warm-up undercount slightly).</p>
       <div id="mileage-chart"></div>
       <div id="chart-tooltip" class="chart-tooltip" hidden></div>
+    </div>
+    <div class="chart-card viz-root" id="pace-trend-card" hidden>
+      <h2 class="chart-title">Average pace per week</h2>
+      <p class="chart-sub">All logged runs with a time and distance — higher is faster.</p>
+      <div id="pace-chart"></div>
+      <div id="pace-tooltip" class="chart-tooltip" hidden></div>
     </div>
     <div class="chart-card">
       <h2 class="chart-title">Week by week</h2>
       <div class="table-wrap"><table class="week-table">
-        <thead><tr><th>Week</th><th>Dates</th><th class="num">Miles</th><th class="num">Runs</th><th class="num">Days logged</th></tr></thead>
+        <thead><tr><th>Week</th><th>Dates</th><th class="num">Planned mi</th><th class="num">Miles</th><th class="num">Runs</th><th class="num">Days logged</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>
     </div>`;
 
   drawMileageChart(info, totals);
+  drawPaceTrend(info, totals);
 }
 
 function drawMileageChart(info, totals) {
@@ -1057,7 +1168,7 @@ function drawMileageChart(info, totals) {
   const margin = { top: 12, right: 12, bottom: 28, left: 36 };
   const iw = W - margin.left - margin.right;
   const ih = H - margin.top - margin.bottom;
-  const maxMiles = Math.max(10, ...totals.map((t) => t.miles));
+  const maxMiles = Math.max(10, ...totals.map((t) => Math.max(t.miles, t.plannedHi || 0)));
   const yMax = Math.ceil(maxMiles / 10) * 10;
   const ticks = [0, yMax / 2, yMax];
   const n = totals.length;
@@ -1076,6 +1187,12 @@ function drawMileageChart(info, totals) {
     const top = y(t.miles);
     const h = margin.top + ih - top;
     const r = Math.min(4, h);
+    // planned-range band behind the bar (context layer, muted outline)
+    const bandW = Math.min(barW + 12, slot * 0.85);
+    const band = t.plannedHi > 0
+      ? `<rect class="planned-band" x="${cx - bandW / 2}" y="${y(t.plannedHi)}"
+           width="${bandW}" height="${Math.max(2, y(t.plannedLo) - y(t.plannedHi))}"/>`
+      : "";
     const bar = h > 0
       ? `<path class="bar" d="M${x},${margin.top + ih} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${margin.top + ih} Z"/>`
       : "";
@@ -1084,6 +1201,7 @@ function drawMileageChart(info, totals) {
       ? `<text x="${cx}" y="${H - 10}" class="axis-label ${isCurrent ? "axis-label-current" : ""}" text-anchor="middle">${t.week}</text>`
       : "";
     return `<g class="bar-group" data-week="${idx}">
+      ${band}
       ${bar}
       <rect class="hit" x="${margin.left + slot * idx}" y="${margin.top}" width="${slot}" height="${ih}"/>
       ${label}
@@ -1103,7 +1221,10 @@ function drawMileageChart(info, totals) {
     g.addEventListener("mousemove", (ev) => {
       const t = totals[Number(g.dataset.week)];
       const range = `${FMT_SHORT.format(addDays(info.start, t.firstIdx))} – ${FMT_SHORT.format(addDays(info.start, t.lastIdx))}`;
-      tooltip.innerHTML = `<strong>Week ${t.week}</strong> · ${range}<br>${t.miles} mi · ${t.runs} run${t.runs === 1 ? "" : "s"} logged`;
+      const plannedBit = t.plannedHi
+        ? ` · planned ${t.plannedLo === t.plannedHi ? t.plannedHi : `${t.plannedLo}–${t.plannedHi}`} mi`
+        : "";
+      tooltip.innerHTML = `<strong>Week ${t.week}</strong> · ${range}<br>${t.miles} mi · ${t.runs} run${t.runs === 1 ? "" : "s"} logged${plannedBit}`;
       tooltip.hidden = false;
       const card = tooltip.parentElement.getBoundingClientRect();
       tooltip.style.left = `${Math.max(8, Math.min(ev.clientX - card.left + 12, card.width - 200))}px`;
@@ -1114,6 +1235,85 @@ function drawMileageChart(info, totals) {
       tooltip.hidden = true;
       g.classList.remove("hover");
     });
+  });
+}
+
+/* Average pace per week from journal entries with time + distance. */
+function drawPaceTrend(info, totals) {
+  const points = totals.map((t) => {
+    let secs = 0, miles = 0;
+    for (let i = t.firstIdx; i <= t.lastIdx; i++) {
+      const e = entryFor(i);
+      if (!e || !(e.status === "completed" || e.status === "modified")) continue;
+      const s = parseDuration(e.duration);
+      if (s && e.distance > 0) {
+        secs += s;
+        miles += Number(e.distance);
+      }
+    }
+    return { week: t.week, pace: miles > 0 ? secs / miles : null, miles: Math.round(miles * 10) / 10 };
+  });
+  const withData = points.filter((p) => p.pace !== null);
+  const card = $("#pace-trend-card");
+  if (withData.length < 1) return; // card stays hidden
+  card.hidden = false;
+
+  const W = 720, H = 200;
+  const margin = { top: 14, right: 12, bottom: 28, left: 48 };
+  const iw = W - margin.left - margin.right;
+  const ih = H - margin.top - margin.bottom;
+  const n = points.length;
+  const slot = iw / n;
+  const minPace = Math.min(...withData.map((p) => p.pace));
+  const maxPace = Math.max(...withData.map((p) => p.pace));
+  const pad = Math.max(15, (maxPace - minPace) * 0.2);
+  const yTop = minPace - pad;   // fastest at the top
+  const yBot = maxPace + pad;
+  const y = (p) => margin.top + ((p - yTop) / (yBot - yTop)) * ih;
+  const x = (idx) => margin.left + slot * idx + slot / 2;
+  const fp = PaceEngine.formatPaceSec;
+
+  const ticks = [yTop + pad * 0.2, (yTop + yBot) / 2, yBot - pad * 0.2];
+  const grid = ticks.map((t) => `
+    <line x1="${margin.left}" x2="${W - margin.right}" y1="${y(t)}" y2="${y(t)}" class="gridline"/>
+    <text x="${margin.left - 6}" y="${y(t) + 4}" class="axis-label" text-anchor="end">${fp(t)}</text>`).join("");
+
+  // line segments between consecutive weeks that both have data
+  let path = "";
+  for (let idx = 1; idx < n; idx++) {
+    if (points[idx].pace !== null && points[idx - 1].pace !== null) {
+      path += `M${x(idx - 1)},${y(points[idx - 1].pace)} L${x(idx)},${y(points[idx].pace)} `;
+    }
+  }
+  const dots = points.map((p, idx) => p.pace === null ? "" : `
+    <g class="pace-point" data-week="${idx}">
+      <circle class="dot-mark" cx="${x(idx)}" cy="${y(p.pace)}" r="4"/>
+      <rect class="hit" x="${margin.left + slot * idx}" y="${margin.top}" width="${slot}" height="${ih}"/>
+    </g>`).join("");
+  const labels = points.map((p, idx) =>
+    `<text x="${x(idx)}" y="${H - 10}" class="axis-label" text-anchor="middle">${p.week}</text>`).join("");
+
+  $("#pace-chart").innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Line chart of average pace per training week"
+         style="width:100%;height:auto;display:block">
+      ${grid}
+      <path class="pace-line" d="${path.trim()}"/>
+      ${dots}
+      ${labels}
+      <text x="${margin.left}" y="${H - 10}" class="axis-label" text-anchor="end">wk</text>
+    </svg>`;
+
+  const tooltip = $("#pace-tooltip");
+  $$(".pace-point", card).forEach((g) => {
+    g.addEventListener("mousemove", (ev) => {
+      const p = points[Number(g.dataset.week)];
+      tooltip.innerHTML = `<strong>Week ${p.week}</strong><br>${fp(p.pace)}/mi avg · ${p.miles} mi`;
+      tooltip.hidden = false;
+      const rect = tooltip.parentElement.getBoundingClientRect();
+      tooltip.style.left = `${Math.max(8, Math.min(ev.clientX - rect.left + 12, rect.width - 180))}px`;
+      tooltip.style.top = `${Math.max(4, ev.clientY - rect.top - 48)}px`;
+    });
+    g.addEventListener("mouseleave", () => { tooltip.hidden = true; });
   });
 }
 
@@ -1591,6 +1791,7 @@ function renderSettings() {
         </div>
         <div class="plan-row-actions">
           ${isActive ? "" : `<button class="btn activate-sched" data-sched="${s.id}">Make active</button>`}
+          <button class="btn export-ics" data-sched="${s.id}" title="Export to calendar (.ics)">ics</button>
           <button class="btn danger delete-sched" data-sched="${s.id}">Delete</button>
         </div>
       </li>`;
@@ -1663,6 +1864,18 @@ function renderSettings() {
       render();
     });
   });
+  $$(".export-ics", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      const s = state.schedules[b.dataset.sched];
+      const info = s && schedInfo(s);
+      if (!info) return;
+      downloadFile(
+        `${plainPlanName(s.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "schedule"}.ics`,
+        scheduleToICS(info),
+        "text/calendar",
+      );
+    });
+  });
   $$(".delete-sched", el).forEach((b) => {
     b.addEventListener("click", () => {
       const s = state.schedules[b.dataset.sched];
@@ -1727,6 +1940,29 @@ function renderSettings() {
     activeTab = "today";
     render();
   });
+}
+
+/* ----- day swapping (modal controls) ----- */
+
+function swapRowHTML(info, i) {
+  const week = info.weeks.find((w) => i >= w.firstIdx && i <= w.lastIdx);
+  if (!week || week.days.length < 2) return "";
+  const options = [];
+  for (let j = week.firstIdx; j <= week.lastIdx; j++) {
+    if (j === i) continue;
+    const d = info.days[j];
+    options.push(`<option value="${j}">${FMT_MED.format(addDays(info.start, j))} — ${plainPlanName(d.title).slice(0, 44)}</option>`);
+  }
+  const day = info.days[i];
+  const undo = day.swappedFrom !== undefined
+    ? `<button type="button" class="btn" id="swap-undo" data-target="${day.swappedFrom}">undo swap</button>` : "";
+  return `
+    <div class="swap-row">
+      <span class="swap-label">life happens — swap with:</span>
+      <select id="swap-target">${options.join("")}</select>
+      <button type="button" class="btn" id="swap-btn">⇄ swap days</button>
+      ${undo}
+    </div>`;
 }
 
 /* ----- pace-zones settings card ----- */
@@ -1845,10 +2081,13 @@ function openDay(i) {
     <div class="card-meta">
       <span class="type-tag type-tag-${day.type}">${TYPE_LABELS[day.type]}</span>
       <span class="card-date">${FMT_LONG.format(date)} · Week ${day.week} · Day ${i + 1} of ${info.len}</span>
+      ${day.swappedFrom !== undefined
+        ? `<span class="type-tag swap-tag">⇄ moved from ${FMT_MED.format(addDays(info.start, day.swappedFrom))}</span>` : ""}
     </div>
     <h2 id="modal-title">${day.title}</h2>
     <div class="workout-details">${details}</div>
     ${paceChipsHTML(day)}
+    ${swapRowHTML(info, i)}
     <hr>
     <form id="journal-form">
       <h3>Journal</h3>
@@ -1934,6 +2173,23 @@ function openDay(i) {
       if (!confirm("Delete this journal entry?")) return;
       deleteEntry(i);
       saveState();
+      closeModal();
+      render();
+    });
+  }
+
+  const swapBtn = $("#swap-btn");
+  if (swapBtn) {
+    swapBtn.addEventListener("click", () => {
+      swapDays(state.activeScheduleId, i, Number($("#swap-target").value));
+      closeModal();
+      render();
+    });
+  }
+  const swapUndo = $("#swap-undo");
+  if (swapUndo) {
+    swapUndo.addEventListener("click", () => {
+      swapDays(state.activeScheduleId, i, Number(swapUndo.dataset.target));
       closeModal();
       render();
     });

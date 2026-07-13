@@ -9,15 +9,15 @@ marathon 34 days out), ordered by how hard they bite during real training.
 |---|---------|--------|
 | 1 | **Target pace zones** — enter a recent race result; the app computes VDOT (Daniels/Gilbert model) and shows personal paces (easy range, M, T/1-hour, 10k, 5k, 3k) inline on every workout that names an effort. Goal time gets a reality check against current fitness instead of silently inflating zones. | ✅ built |
 | 2 | **Quick-log + yesterday** — one-tap "✓ done" on day cards, and an unlogged-yesterday card on the Today tab so back-filling doesn't require the Schedule tab. | ✅ built |
-| 3 | **Day swapping** — swap a workout with another day in the same week ("it rained, long run moves to Sunday") without editing the plan. | next up |
+| 3 | **Day swapping** — swap a workout with another day in the same week ("it rained, long run moves to Sunday") without editing the plan; swapped days are tagged, undoable, and journals stay pinned to their dates. | ✅ built |
 
 ## Tier 2 — deepens the payoff
 
 | # | Feature | Status |
 |---|---------|--------|
-| 4 | **Planned vs. actual mileage** — parse the plan's mileage ranges ("8–12 mi") and draw the planned band behind the actual bars; stop counting rest days in "days logged". | planned |
-| 5 | **Pace trends** — average easy pace by week, long-run progression, RPE vs. pace; the journal already collects everything needed. | planned |
-| 6 | **Calendar (ICS) export** — subscribe to the schedule from Google/Apple Calendar; dependency-free. | planned |
+| 4 | **Planned vs. actual mileage** — the plan's listed mileage ranges render as a dashed band behind the actual bars and a "planned mi" table column; rest days no longer count in "days logged". | ✅ built |
+| 5 | **Pace trends** — average pace per week as a line chart (higher = faster) from journaled time + distance. | ✅ built |
+| 6 | **Calendar (ICS) export** — download a schedule as an .ics of all-day events (RFC 5545-folded) for Google/Apple Calendar import. | ✅ built |
 
 ## Tier 3 — bigger bets
 

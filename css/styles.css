@@ -734,6 +734,48 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
   color: var(--neon-cyan);
 }
 
+/* ---------- day swapping ---------- */
+
+.swap-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 4px;
+}
+.swap-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.swap-row select { max-width: 320px; font-size: 12px; }
+.type-tag.swap-tag { border-color: var(--neon-yellow); color: var(--neon-yellow); background: var(--neon-yellow-08); }
+
+/* ---------- charts: planned band + pace trend ---------- */
+
+.viz-root .planned-band {
+  fill: rgba(136, 136, 170, 0.08);
+  stroke: var(--border-bright);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.viz-root .pace-line {
+  fill: none;
+  stroke: var(--series-1);
+  stroke-width: 2;
+}
+.viz-root .dot-mark {
+  fill: var(--bg-card);
+  stroke: var(--series-1);
+  stroke-width: 2;
+}
+.viz-root .pace-point:hover .dot-mark {
+  stroke: var(--neon-cyan);
+  filter: drop-shadow(0 0 5px rgba(0, 245, 255, 0.6));
+}
+
 /* ---------- pace chips ---------- */
 
 .pace-row {
