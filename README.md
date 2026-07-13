@@ -50,6 +50,12 @@ went to track your progress.
   upload format, so it round-trips) or open a **print-formatted PDF view**
   (the browser's print dialog does "Save as PDF"; the layout is grid-style,
   so even our own PDF importer can read it back).
+- **Installable PWA** — add to your phone's home screen and launch standalone;
+  the app shell works offline (training data lives in localStorage and
+  re-syncs when you're back online).
+- **GPX import** — import a `.gpx` from your watch or Strava's "Export GPX"
+  straight into a journal entry; it fills distance and elapsed time so logging
+  a run is a click, not typing.
 - **Backup** — export/import all your data as JSON. Mobile friendly.
 - **NEON//GRID design system** — the UI implements the owner's personal
   design system (cyberpunk/synthwave: near-black canvas, neon accents as

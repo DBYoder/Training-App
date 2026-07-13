@@ -23,11 +23,11 @@ marathon 34 days out), ordered by how hard they bite during real training.
 
 | # | Feature | Status |
 |---|---------|--------|
-| 7 | Shoe tracking with cumulative mileage | idea |
+| 7 | Shoe tracking with cumulative mileage | skipped (per owner) |
 | 8 | Race-week checklist (fueling notes + goal-pace band splits) | idea |
-| 9 | PWA manifest (home-screen install) | idea |
-| 10 | GPX/Strava import so logging becomes confirmation, not data entry | idea |
-| 11 | Password reset via a mail provider | idea |
+| 9 | **PWA** — web app manifest + service worker: installs to the home screen, launches standalone, and the shell works offline (training data already lives in localStorage). | ✅ built |
+| 10 | **GPX import** — import a `.gpx` from a watch or Strava's "Export GPX" into a journal entry; fills distance (haversine) and elapsed time, auto-sets completed, warns on a date mismatch. Full Strava OAuth is a later step; file import needs no API registration. | ✅ built |
+| 11 | Password reset via a mail provider | skipped for now (per owner) |
 
 ## Pace-zone accuracy notes (feature 1)
 

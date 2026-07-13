@@ -39,6 +39,8 @@ const MIME = {
   ".mjs": "text/javascript; charset=utf-8",
   ".pdf": "application/pdf",
   ".woff2": "font/woff2",
+  ".webmanifest": "application/manifest+json",
+  ".gpx": "application/gpx+xml",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",

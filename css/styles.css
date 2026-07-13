@@ -967,6 +967,8 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   color: var(--neon-lime);
   text-shadow: 0 0 6px rgba(170,255,0,0.4);
 }
+.gpx-row { margin-top: 10px; }
+
 .rating-line {
   display: flex;
   align-items: center;

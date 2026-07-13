@@ -2058,6 +2058,55 @@ function wirePaceCard() {
   });
 }
 
+/* ----- GPX import (watch / Strava "Export GPX") ----- */
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("That doesn't look like a valid GPX file.");
+  const pts = [...doc.getElementsByTagName("trkpt")];
+  if (pts.length < 2) throw new Error("No GPS track points found — export the activity as GPX (Strava: activity → ⋯ → Export GPX).");
+  let meters = 0;
+  let prev = null;
+  let firstMs = null, lastMs = null;
+  for (const pt of pts) {
+    const lat = parseFloat(pt.getAttribute("lat"));
+    const lon = parseFloat(pt.getAttribute("lon"));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (prev) meters += haversineMeters(prev.lat, prev.lon, lat, lon);
+    prev = { lat, lon };
+    const t = pt.getElementsByTagName("time")[0]?.textContent;
+    if (t) {
+      const ms = Date.parse(t);
+      if (!Number.isNaN(ms)) {
+        if (firstMs === null) firstMs = ms;
+        lastMs = ms;
+      }
+    }
+  }
+  const miles = meters / 1609.344;
+  if (miles < 0.05) throw new Error("This GPX barely moves — is it the right activity?");
+  const seconds = firstMs !== null && lastMs > firstMs ? (lastMs - firstMs) / 1000 : null;
+  return { miles, seconds, start: firstMs !== null ? new Date(firstMs) : null };
+}
+
+function formatDurationInput(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.round(sec % 60);
+  return h
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
 /* ----- Day detail modal + journal form ----- */
 
 function openDay(i) {
@@ -2112,6 +2161,10 @@ function openDay(i) {
           <select name="rpe">${rpeOptions}</select>
         </label>
       </div>
+      <div class="inline-controls gpx-row">
+        <label class="btn">import .gpx (watch / strava export)<input type="file" class="gpx-file" accept=".gpx" hidden></label>
+        <span class="gpx-msg hint"></span>
+      </div>
       <div class="pace-line" id="pace-line"></div>
       <div class="rating-line"><span>Felt like:</span><div class="stars" id="stars">${ratingButtons}</div></div>
       <label class="notes-label">Notes — splits, times, weather, fueling, how the legs felt…
@@ -2134,6 +2187,30 @@ function openDay(i) {
   };
   updatePace();
   $("#journal-form").addEventListener("input", updatePace);
+
+  $(".gpx-file", modal).addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const form = $("#journal-form");
+    const msgEl = $(".gpx-msg", modal);
+    msgEl.classList.remove("sync-error");
+    try {
+      const gpx = parseGpx(await file.text());
+      form.distance.value = gpx.miles.toFixed(1);
+      if (gpx.seconds) form.duration.value = formatDurationInput(gpx.seconds);
+      if (!form.status.value) form.status.value = "completed";
+      updatePace();
+      let msg = `imported ${gpx.miles.toFixed(2)} mi${gpx.seconds ? ` · ${formatDurationInput(gpx.seconds)} elapsed` : ""}`;
+      if (gpx.start && toISODate(gpx.start) !== toISODate(date)) {
+        msg += ` — heads up: activity is from ${FMT_MED.format(gpx.start)}`;
+      }
+      msgEl.textContent = msg;
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.classList.add("sync-error");
+    }
+    ev.target.value = "";
+  });
 
   $$("#stars .star").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2298,6 +2375,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   window.addEventListener("pagehide", flushPendingPush);
+
+  // PWA: offline shell + installability (silent no-op where unsupported)
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
 
   boot();
 });
