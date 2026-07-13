@@ -734,6 +734,33 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
   color: var(--neon-cyan);
 }
 
+/* ---------- pace chips ---------- */
+
+.pace-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0 10px;
+}
+.pace-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--neon-lime);
+  background: var(--neon-lime-08);
+  border: 1px solid rgba(170, 255, 0, 0.35);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.pace-chip b {
+  font-weight: 400;
+  text-transform: uppercase;
+  color: var(--fg-secondary);
+  margin-right: 2px;
+}
+.pace-tip { margin: -4px 0 12px; }
+#pace-time, #pace-goal { width: 220px; }
+
 .share-form-row {
   list-style: none;
   padding: 4px 0 14px;

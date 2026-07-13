@@ -25,6 +25,11 @@ went to track your progress.
   Monday, and in race mode the race lands on its true date inside the final
   week, dropping any unused post-race taper days. Each schedule keeps its own
   journal; switch the active one in Settings.
+- **Target pace zones** — enter a recent race result (Daniels VDOT model,
+  validated against the published tables); every workout that names an effort
+  ("M effort", "1-hour effort", 10k/5k/3k) shows your personal pace inline,
+  and goal times get a reality check against current fitness. See FEATURES.md
+  for the accuracy notes.
 - **Today view** — today's workout front and center, with a race-day countdown
   (or day-X-of-N progress for start-mode schedules).
 - **Full schedule** — every week expandable, current week highlighted, days

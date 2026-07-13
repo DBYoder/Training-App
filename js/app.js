@@ -42,7 +42,11 @@ let sharesCache = [];     // last-fetched incoming shares
 let state = emptyState();
 
 function emptyState() {
-  return { plans: {}, schedules: {}, journal: {}, activeScheduleId: null, activeUpdatedAt: null };
+  return {
+    plans: {}, schedules: {}, journal: {},
+    activeScheduleId: null, activeUpdatedAt: null,
+    profile: null, // {raceDist, raceTime, goalTime, updatedAt} for pace zones
+  };
 }
 
 /* ---------- persistence (per-user local cache) ---------- */
@@ -282,6 +286,53 @@ function paceFor(entry) {
   return formatPace(secs / entry.distance);
 }
 
+/* ---------- target pace zones (Daniels VDOT — see js/paces.js) ---------- */
+
+function currentVdot() {
+  const p = state.profile;
+  if (!p || !p.raceTime) return null;
+  const meters = PaceEngine.RACE_DISTANCES[p.raceDist];
+  const secs = parseDuration(p.raceTime);
+  if (!meters || !secs) return null;
+  return PaceEngine.vdotFromRace(meters, secs);
+}
+
+let zonesCacheKey = null;
+let zonesCache = null;
+
+function currentZones() {
+  const vdot = currentVdot();
+  if (!vdot) return null;
+  const key = vdot.toFixed(3);
+  if (zonesCacheKey !== key) {
+    zonesCache = PaceEngine.trainingPaces(vdot);
+    zonesCacheKey = key;
+  }
+  return zonesCache;
+}
+
+/* Pace chips for the zones a workout actually names ("M effort",
+ * "1-hour effort", "10k", …). Zones come from the entered race result only —
+ * never from the goal time. */
+function paceChipsHTML(day) {
+  const z = currentZones();
+  if (!z) return "";
+  const text = `${day.title} ${day.details.join(" ")}`.toLowerCase();
+  const fp = PaceEngine.formatPaceSec;
+  const chips = [];
+  if (day.type === "race" || /\bm effort|marathon effort|at m\b/.test(text)) chips.push(["M", `${fp(z.M)}/mi`]);
+  if (/1-hour effort|threshold|hard tempo/.test(text)) chips.push(["T", `${fp(z.T)}/mi`]);
+  if (/10k/.test(text)) chips.push(["10k", `${fp(z.tenK)}/mi`]);
+  if (/\b5k\b/.test(text)) chips.push(["5k", `${fp(z.fiveK)}/mi`]);
+  if (/\b3k\b/.test(text)) chips.push(["3k", `${fp(z.threeK)}/mi`]);
+  if (day.type === "easy" || day.type === "long" || /\beasy\b/.test(text)) {
+    chips.push(["easy", `${fp(z.easySlow)}–${fp(z.easyFast)}/mi`]);
+  }
+  if (!chips.length) return "";
+  return `<div class="pace-row">${chips.slice(0, 4)
+    .map(([l, v]) => `<span class="pace-chip"><b>${l}</b> ${v}</span>`).join("")}</div>`;
+}
+
 /* ---------- auth ---------- */
 
 async function authRequest(path, body) {
@@ -391,6 +442,9 @@ function mergeStates(local, remote) {
     merged.activeScheduleId = remote.activeScheduleId;
     merged.activeUpdatedAt = remote.activeUpdatedAt;
   }
+  merged.profile = ts(remote.profile?.updatedAt) > ts(local.profile?.updatedAt)
+    ? remote.profile
+    : (local.profile ?? remote.profile ?? null);
   return merged;
 }
 
@@ -817,9 +871,12 @@ function dayCard(info, i, { heading } = {}) {
       </div>
       <h3 class="card-title">${day.title}</h3>
       <p class="card-detail">${detailHTML(info.plan, day.details[0])}</p>
+      ${paceChipsHTML(day)}
       <div class="card-footer">
         ${statusBadge(entry)}
         ${loggedBits.length ? `<span class="logged-bits">${esc(loggedBits.join(" · "))}</span>` : ""}
+        ${!(entry && entry.status) && day.type !== "rest" && i <= info.todayIdx
+          ? `<button class="btn quick-log" data-quicklog="${i}">✓ done</button>` : ""}
         <span class="card-cta">${entry && entry.status ? "View / edit journal →" : "Open & journal →"}</span>
       </div>
     </article>`;
@@ -851,10 +908,28 @@ function renderToday() {
   } else {
     const isRaceDay = info.days[ti].type === "race";
     const parts = [dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
+    if (!state.profile) {
+      parts.push(`<p class="hint pace-tip">tip: add a recent race result in
+        <a href="#" class="goto-pace-settings">Settings → pace zones</a> to see your
+        target paces on every workout.</p>`);
+    }
+    // back-fill nudge: yesterday went unlogged (rest days don't count)
+    if (ti > 0 && !entryFor(ti - 1) && info.days[ti - 1].type !== "rest") {
+      parts.push(`<h2 class="section-label">yesterday — not logged</h2>`, dayCard(info, ti - 1));
+    }
     if (ti + 1 < info.len) {
       parts.push(`<h2 class="section-label">Up next</h2>`, dayCard(info, ti + 1));
     }
     el.innerHTML = parts.join("");
+    const tip = $(".goto-pace-settings", el);
+    if (tip) {
+      tip.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        activeTab = "settings";
+        render();
+        $("#pace-card")?.scrollIntoView({ block: "start" });
+      });
+    }
   }
 }
 
@@ -1550,6 +1625,7 @@ function renderSettings() {
 
   el.innerHTML = `
     ${firstRun ? newScheduleCard + accountCard : accountCard + newScheduleCard}
+    ${paceCardHTML()}
     <div class="settings-card">
       <h2>My schedules</h2>
       ${scheds.length ? `<ul class="plan-list">${scheds.map(schedRow).join("")}</ul>`
@@ -1570,6 +1646,7 @@ function renderSettings() {
     </div>`;
 
   wireScheduleForm(el);
+  wirePaceCard();
 
   $("#sync-now").addEventListener("click", async () => {
     $("#account-sync-status").textContent = "Syncing…";
@@ -1652,6 +1729,99 @@ function renderSettings() {
   });
 }
 
+/* ----- pace-zones settings card ----- */
+
+function paceCardHTML() {
+  const p = state.profile;
+  const vdot = currentVdot();
+  let summary = "";
+  if (vdot) {
+    const z = currentZones();
+    const fp = PaceEngine.formatPaceSec;
+    const fc = PaceEngine.formatClock;
+    const eq = (m) => fc(PaceEngine.equivalentRaceTime(vdot, m));
+    let goalNote = "";
+    const goalSecs = p.goalTime ? parseDuration(p.goalTime) : null;
+    if (goalSecs) {
+      const predicted = PaceEngine.equivalentRaceTime(vdot, 42195);
+      const goalVdot = PaceEngine.vdotFromRace(42195, goalSecs);
+      const goalPace = fp(goalSecs / 26.21875);
+      goalNote = goalSecs < predicted * 0.98
+        ? `<p class="hint sync-error" id="goal-note">⚠ Goal ${esc(p.goalTime)} (${goalPace}/mi) needs
+            VDOT ${goalVdot ? goalVdot.toFixed(1) : "?"} — your current race result predicts
+            ${fc(predicted)}. Zones stay pinned to current fitness; retest (the week-9 tempo
+            is perfect for this) and update here as fitness improves.</p>`
+        : `<p class="hint" id="goal-note">Goal ${esc(p.goalTime)} = ${goalPace}/mi — consistent with
+            current fitness (predicted ${fc(predicted)}).</p>`;
+    }
+    summary = `
+      <p>VDOT <strong>${vdot.toFixed(1)}</strong> · equivalent races:
+        5k ${eq(5000)} · 10k ${eq(10000)} · half ${eq(21097.5)} · marathon ${eq(42195)}</p>
+      <div class="pace-row">
+        <span class="pace-chip"><b>easy</b> ${fp(z.easySlow)}–${fp(z.easyFast)}/mi</span>
+        <span class="pace-chip"><b>M</b> ${fp(z.M)}/mi</span>
+        <span class="pace-chip"><b>T</b> ${fp(z.T)}/mi</span>
+        <span class="pace-chip"><b>10k</b> ${fp(z.tenK)}/mi</span>
+        <span class="pace-chip"><b>5k</b> ${fp(z.fiveK)}/mi</span>
+        <span class="pace-chip"><b>3k</b> ${fp(z.threeK)}/mi</span>
+      </div>
+      ${goalNote}`;
+  }
+  return `
+    <div class="settings-card" id="pace-card">
+      <h2>Pace zones</h2>
+      <p class="hint">Zones follow the Daniels VDOT model, computed from a <strong>recent race
+      result</strong> — the fresher the better. A goal time never changes the zones: train where
+      you are, not where you hope to be.</p>
+      ${summary}
+      <div class="inline-controls">
+        <select id="pace-dist">
+          ${["5k", "10k", "half", "marathon"].map((d) =>
+            `<option value="${d}" ${p?.raceDist === d ? "selected" : ""}>${d === "half" ? "half marathon" : d}</option>`).join("")}
+        </select>
+        <input type="text" id="pace-time" placeholder="race time (19:57 or 1:31:35)"
+               value="${esc(p?.raceTime || "")}">
+        <input type="text" id="pace-goal" placeholder="goal marathon (optional)"
+               value="${esc(p?.goalTime || "")}">
+        <button id="pace-save" class="btn primary">Save</button>
+        <span id="pace-msg" class="hint"></span>
+      </div>
+    </div>`;
+}
+
+function wirePaceCard() {
+  $("#pace-save").addEventListener("click", () => {
+    const msgEl = $("#pace-msg");
+    msgEl.classList.remove("sync-error");
+    const raceDist = $("#pace-dist").value;
+    const raceTime = $("#pace-time").value.trim();
+    const goalTime = $("#pace-goal").value.trim();
+    const secs = parseDuration(raceTime);
+    if (!secs) {
+      msgEl.textContent = "Enter the race time as mm:ss or h:mm:ss.";
+      msgEl.classList.add("sync-error");
+      return;
+    }
+    if (!PaceEngine.vdotFromRace(PaceEngine.RACE_DISTANCES[raceDist], secs)) {
+      msgEl.textContent = "That time doesn't look plausible for that distance — double-check both.";
+      msgEl.classList.add("sync-error");
+      return;
+    }
+    if (goalTime && !parseDuration(goalTime)) {
+      msgEl.textContent = "Goal time should look like 3:05:00.";
+      msgEl.classList.add("sync-error");
+      return;
+    }
+    state.profile = {
+      raceDist, raceTime,
+      goalTime: goalTime || null,
+      updatedAt: new Date().toISOString(),
+    };
+    saveState();
+    render();
+  });
+}
+
 /* ----- Day detail modal + journal form ----- */
 
 function openDay(i) {
@@ -1678,6 +1848,7 @@ function openDay(i) {
     </div>
     <h2 id="modal-title">${day.title}</h2>
     <div class="workout-details">${details}</div>
+    ${paceChipsHTML(day)}
     <hr>
     <form id="journal-form">
       <h3>Journal</h3>
@@ -1829,8 +2000,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Day cards / schedule rows (delegated)
+  // Day cards / schedule rows (delegated); quick-log wins over opening the modal
   document.addEventListener("click", (ev) => {
+    const quick = ev.target.closest("[data-quicklog]");
+    if (quick) {
+      setEntry(Number(quick.dataset.quicklog), {
+        status: "completed",
+        updatedAt: new Date().toISOString(),
+      });
+      saveState();
+      render();
+      return;
+    }
     const target = ev.target.closest("[data-day]");
     if (target && !ev.target.closest("a")) openDay(Number(target.dataset.day));
   });
