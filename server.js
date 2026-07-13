@@ -27,6 +27,10 @@ const USERS_INDEX_FILE = path.join(DATA_DIR, "users.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const userFile = (id) => path.join(DATA_DIR, "users", `${id}.json`);
 const userDataFile = (id) => path.join(DATA_DIR, "userdata", `${id}.json`);
+const inboxFile = (id) => path.join(DATA_DIR, "inbox", `${id}.json`);
+
+const MAX_SHARE_BYTES = 1024 * 1024;
+const MAX_INBOX_ITEMS = 50;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -264,6 +268,66 @@ function handleData(req, res) {
   sendJson(res, 405, { error: "method_not_allowed" });
 }
 
+/* ---------- plan sharing (per-recipient inbox) ---------- */
+
+function handleShareSend(req, res) {
+  const session = sessionFor(req);
+  if (!session) return sendJson(res, 401, { error: "not_logged_in" });
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  readJsonBody(req, res, MAX_SHARE_BYTES, (body) => {
+    const email = String(body.email || "").trim().toLowerCase();
+    const plan = body.plan;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return sendJson(res, 400, { error: "invalid_email" });
+    }
+    if (!plan || typeof plan !== "object" || !Array.isArray(plan.weeks) ||
+        !plan.weeks.length || plan.weeks.length > 60) {
+      return sendJson(res, 400, { error: "invalid_plan" });
+    }
+    const index = readJson(USERS_INDEX_FILE, {});
+    const recipientId = index[email];
+    if (!recipientId) return sendJson(res, 404, { error: "recipient_not_found" });
+    if (recipientId === session.userId) return sendJson(res, 400, { error: "cannot_share_with_self" });
+    const inbox = readJson(inboxFile(recipientId), []);
+    if (inbox.length >= MAX_INBOX_ITEMS) return sendJson(res, 409, { error: "inbox_full" });
+    const sender = readJson(userFile(session.userId), null);
+    inbox.push({
+      id: crypto.randomUUID(),
+      fromEmail: sender ? sender.email : "unknown",
+      sharedAt: new Date().toISOString(),
+      plan,
+    });
+    try {
+      writeJson(inboxFile(recipientId), inbox);
+    } catch {
+      return sendJson(res, 500, { error: "write_failed" });
+    }
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+function handleSharesList(req, res) {
+  const session = sessionFor(req);
+  if (!session) return sendJson(res, 401, { error: "not_logged_in" });
+  sendJson(res, 200, { shares: readJson(inboxFile(session.userId), []) });
+}
+
+function handleShareDismiss(req, res) {
+  const session = sessionFor(req);
+  if (!session) return sendJson(res, 401, { error: "not_logged_in" });
+  readJsonBody(req, res, MAX_AUTH_BODY_BYTES, (body) => {
+    const id = String(body.id || "");
+    const inbox = readJson(inboxFile(session.userId), []);
+    const next = inbox.filter((s) => s.id !== id);
+    try {
+      writeJson(inboxFile(session.userId), next);
+    } catch {
+      return sendJson(res, 500, { error: "write_failed" });
+    }
+    sendJson(res, 200, { ok: true });
+  });
+}
+
 const API_ROUTES = {
   "POST /api/register": handleRegister,
   "POST /api/login": handleLogin,
@@ -271,6 +335,9 @@ const API_ROUTES = {
   "GET /api/me": handleMe,
   "GET /api/data": handleData,
   "PUT /api/data": handleData,
+  "POST /api/share": handleShareSend,
+  "GET /api/shares": handleSharesList,
+  "POST /api/shares/dismiss": handleShareDismiss,
 };
 
 /* ---------- static files ---------- */

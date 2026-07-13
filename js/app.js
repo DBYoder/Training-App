@@ -37,6 +37,8 @@ let authMode = "login";
 let activeTab = "today";
 let pendingPlanId = null; // preselect in the new-schedule form
 let builder = null;       // in-app plan builder state, or null
+let sharePlanId = null;   // plan row with the share form open, or null
+let sharesCache = [];     // last-fetched incoming shares
 let state = emptyState();
 
 function emptyState() {
@@ -547,6 +549,105 @@ function plainPlanName(name) {
   return name.replace(/&[^;]+;/g, "");
 }
 
+/* ----- sharing & export ----- */
+
+/* A shared plan is data authored by ANOTHER user's client — never trust its
+ * HTML. Reduce every field to plain text, then re-run it through the same
+ * parsing pipeline as uploads so the stored result is sanitized/classified
+ * by our own code. */
+function sanitizeSharedPlan(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("not a plan");
+  const jsonShape = {
+    name: htmlToPlainText(raw.name).slice(0, 120),
+    dayHeaders: Array.isArray(raw.dayHeaders)
+      ? raw.dayHeaders.map((h) => htmlToPlainText(h))
+      : undefined,
+    weeks: (Array.isArray(raw.weeks) ? raw.weeks : []).map((w) => ({
+      days: (Array.isArray(w?.days) ? w.days : []).map((d) => ({
+        type: d?.type,
+        title: htmlToPlainText(d?.title),
+        details: Array.isArray(d?.details) ? d.details.map(htmlToPlainText) : [],
+      })),
+    })),
+  };
+  return PlanParser.parseJsonPlan(JSON.stringify(jsonShape), "Shared plan");
+}
+
+function planSlug(plan) {
+  return plainPlanName(plan.name).toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "plan";
+}
+
+function planToMarkdown(plan) {
+  const cellEsc = (t) => t.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+  const headers = plan.dayHeaders.map((h) => htmlToPlainText(h));
+  const lines = [`**${plainPlanName(plan.name)}**`, ""];
+  lines.push(`|  | ${headers.join(" | ")} |`);
+  lines.push(`| ${Array(headers.length + 1).fill("-----").join(" | ")} |`);
+  plan.weeks.forEach((w, i) => {
+    const cells = w.days.map((d) => cellEsc(dayCellText(d)));
+    lines.push(`| Week ${i + 1} | ${cells.join(" | ")} |`);
+  });
+  return lines.join("\n") + "\n";
+}
+
+function downloadFile(filename, text, type) {
+  const blob = new Blob([text], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportPlanMarkdown(plan) {
+  downloadFile(`${planSlug(plan)}.md`, planToMarkdown(plan), "text/markdown");
+}
+
+/* Print-formatted grid (light, paper-oriented). Opening it triggers the
+ * browser's print dialog, where "Save as PDF" produces the file — and the
+ * layout matches what our own PDF importer can read back. */
+function printablePlanHTML(plan) {
+  const name = plainPlanName(plan.name);
+  const headers = plan.dayHeaders.map((h) => esc(htmlToPlainText(h)));
+  const rows = plan.weeks.map((w, i) =>
+    `<tr><th>Week ${i + 1}</th>${w.days.map((d) =>
+      `<td><span class="t">${esc(TYPE_LABELS[d.type] || d.type)}</span>${esc(dayCellText(d))}</td>`
+    ).join("")}</tr>`).join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(name)}</title><style>
+    @page { size: letter landscape; margin: 1.2cm; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 16px; background: #fff; }
+    h1 { font-size: 16px; margin: 0 0 10px; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 7.5px; line-height: 1.35; }
+    th, td { border: 1px solid #999; padding: 4px; vertical-align: top; text-align: left; }
+    thead th { background: #eee; font-size: 9px; }
+    tbody th { width: 44px; background: #f5f5f5; font-size: 8px; }
+    .t { display: block; font-weight: bold; text-transform: uppercase; font-size: 6.5px; letter-spacing: 0.05em; color: #666; margin-bottom: 2px; }
+    footer { margin-top: 8px; font-size: 7px; color: #888; }
+  </style></head><body>
+  <h1>${esc(name)}</h1>
+  <table><thead><tr><th></th>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+  <tbody>${rows}</tbody></table>
+  <footer>exported from marathon//trainer</footer>
+  </body></html>`;
+}
+
+function exportPlanPdf(plan) {
+  const w = window.open("", "_blank");
+  if (!w) {
+    alert("Allow pop-ups for this site to export as PDF.");
+    return;
+  }
+  w.document.write(printablePlanHTML(plan));
+  w.document.close();
+  setTimeout(() => {
+    try {
+      w.focus();
+      w.print(); // "Save as PDF" in the dialog
+    } catch { /* window closed; the view can still be printed manually */ }
+  }, 300);
+}
+
 /* ----- onboarding / new-schedule form ----- */
 
 function planOptionsHTML(selectedId) {
@@ -982,21 +1083,39 @@ function renderPlans() {
   const planRow = (p) => {
     const days = p.weeks.reduce((s, w) => s + w.days.length, 0);
     const used = (schedulesByPlan[p.id] || []).length;
+    const shareForm = sharePlanId === p.id ? `
+      <li class="share-form-row">
+        <div class="inline-controls">
+          <input type="email" class="share-email" placeholder="teammate@email.com" autocomplete="off">
+          <button class="btn primary share-send" data-plan="${p.id}">Send</button>
+          <button class="btn share-cancel">Cancel</button>
+          <span class="share-msg hint"></span>
+        </div>
+        <p class="hint">They'll see it under “Shared with you” on their Plans tab.
+        The account must already exist.</p>
+      </li>` : "";
     return `
       <li class="plan-row" data-plan="${p.id}">
         <div class="plan-row-main">
           <strong>${p.name}</strong>
-          <span class="hint">${p.weeks.length} weeks · ${days} days${used ? ` · used by ${used} schedule${used === 1 ? "" : "s"}` : ""}</span>
+          <span class="hint">${p.weeks.length} weeks · ${days} days${p.sharedFrom ? ` · from ${esc(p.sharedFrom)}` : ""}${used ? ` · used by ${used} schedule${used === 1 ? "" : "s"}` : ""}</span>
         </div>
         <div class="plan-row-actions">
           <button class="btn use-plan" data-plan="${p.id}">Use this plan</button>
           <button class="btn edit-plan" data-plan="${p.id}">Edit</button>
+          <button class="btn share-plan" data-plan="${p.id}">Share</button>
+          <button class="btn export-md" data-plan="${p.id}" title="Export as Markdown">md</button>
+          <button class="btn export-pdf" data-plan="${p.id}" title="Export as PDF (print dialog)">pdf</button>
           <button class="btn danger delete-plan" data-plan="${p.id}">Delete</button>
         </div>
-      </li>`;
+      </li>${shareForm}`;
   };
 
   el.innerHTML = `
+    <div class="settings-card" id="shared-inbox" hidden>
+      <h2>Shared with you</h2>
+      <ul class="plan-list" id="shares-list"></ul>
+    </div>
     <div class="settings-card">
       <h2>Upload a training plan</h2>
       <p>Upload a <strong>PDF</strong> (a grid-style plan — one row per week, one column per
@@ -1085,6 +1204,69 @@ function renderPlans() {
   $$(".edit-plan", el).forEach((b) => {
     b.addEventListener("click", () => openBuilder(getPlan(b.dataset.plan)));
   });
+
+  // share / export
+  $$(".share-plan", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      sharePlanId = sharePlanId === b.dataset.plan ? null : b.dataset.plan;
+      render();
+      const input = $(".share-email");
+      if (input) input.focus();
+    });
+  });
+  const shareCancel = $(".share-cancel", el);
+  if (shareCancel) {
+    shareCancel.addEventListener("click", () => {
+      sharePlanId = null;
+      render();
+    });
+  }
+  const shareSend = $(".share-send", el);
+  if (shareSend) {
+    shareSend.addEventListener("click", async () => {
+      const email = $(".share-email").value.trim();
+      const msgEl = $(".share-msg");
+      msgEl.classList.remove("sync-error");
+      if (!email) {
+        msgEl.textContent = "Enter an email address.";
+        msgEl.classList.add("sync-error");
+        return;
+      }
+      msgEl.textContent = "Sending…";
+      try {
+        const res = await fetch("/api/share", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, plan: state.plans[shareSend.dataset.plan] }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          msgEl.textContent = `Sent to ${email} ✓`;
+          $(".share-email").value = "";
+        } else {
+          msgEl.textContent = {
+            recipient_not_found: "No account with that email — they need to sign up first.",
+            cannot_share_with_self: "That's you — share it with someone else.",
+            inbox_full: "Their share inbox is full.",
+            invalid_email: "That doesn't look like an email address.",
+            too_many_attempts: "Too many shares — wait a few minutes.",
+          }[data.error] || "Couldn't send — try again.";
+          msgEl.classList.add("sync-error");
+        }
+      } catch {
+        msgEl.textContent = "Can't reach the server.";
+        msgEl.classList.add("sync-error");
+      }
+    });
+  }
+  $$(".export-md", el).forEach((b) => {
+    b.addEventListener("click", () => exportPlanMarkdown(getPlan(b.dataset.plan)));
+  });
+  $$(".export-pdf", el).forEach((b) => {
+    b.addEventListener("click", () => exportPlanPdf(getPlan(b.dataset.plan)));
+  });
+
+  refreshShares();
   $$(".delete-plan", el).forEach((b) => {
     b.addEventListener("click", () => {
       const id = b.dataset.plan;
@@ -1101,19 +1283,90 @@ function renderPlans() {
   });
 }
 
+/* Fetch incoming shares and populate the "Shared with you" card (the Plans
+ * panel renders synchronously; this fills in when the request lands). */
+async function refreshShares() {
+  if (!user) return;
+  let shares;
+  try {
+    const res = await fetch("/api/shares");
+    if (!res.ok) return;
+    shares = (await res.json()).shares || [];
+  } catch {
+    return; // offline — the card just stays hidden
+  }
+  sharesCache = shares;
+  const card = $("#shared-inbox");
+  if (!card) return; // user navigated away from the Plans tab
+  if (!shares.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $("#shares-list").innerHTML = shares.map((s) => {
+    const weeks = Array.isArray(s.plan?.weeks) ? s.plan.weeks.length : "?";
+    const name = esc(htmlToPlainText(s.plan?.name).slice(0, 80) || "Plan");
+    return `
+      <li class="plan-row">
+        <div class="plan-row-main">
+          <strong>${name}</strong>
+          <span class="hint">${weeks} weeks · shared by ${esc(s.fromEmail)}</span>
+        </div>
+        <div class="plan-row-actions">
+          <button class="btn primary accept-share" data-id="${s.id}">Accept</button>
+          <button class="btn dismiss-share" data-id="${s.id}">Dismiss</button>
+        </div>
+      </li>`;
+  }).join("");
+
+  const dismiss = (id) =>
+    fetch("/api/shares/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => {});
+
+  $$(".accept-share", card).forEach((b) => {
+    b.addEventListener("click", async () => {
+      const share = sharesCache.find((s) => s.id === b.dataset.id);
+      if (!share) return;
+      try {
+        const clean = sanitizeSharedPlan(share.plan);
+        pendingPlanId = storeParsedPlan({ ...clean, sharedFrom: share.fromEmail }).id;
+      } catch (e) {
+        alert(`Couldn't import this shared plan: ${e.message}`);
+        return;
+      }
+      await dismiss(share.id);
+      render();
+    });
+  });
+  $$(".dismiss-share", card).forEach((b) => {
+    b.addEventListener("click", async () => {
+      await dismiss(b.dataset.id);
+      render();
+    });
+  });
+}
+
 /* ----- in-app plan builder ----- */
 
 const DEFAULT_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/* Extract plain text from stored/foreign HTML via an inert DOM (DOMParser
+ * never loads resources or runs script); anchors become markdown links. */
+function htmlToPlainText(html) {
+  const doc = new DOMParser().parseFromString(String(html ?? ""), "text/html");
+  doc.querySelectorAll("a[href]").forEach((a) => {
+    const href = a.getAttribute("href") || "";
+    a.replaceWith(/^https?:\/\//.test(href) ? `[${a.textContent}](${href})` : a.textContent);
+  });
+  return (doc.body.textContent || "").trim();
+}
+
 /* Reconstruct editable text from a stored day (details hold sanitized HTML). */
 function dayCellText(day) {
-  return day.details.map((html) => {
-    const withLinks = String(html)
-      .replace(/<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g, "[$2]($1)");
-    const tmp = document.createElement("div");
-    tmp.innerHTML = withLinks;
-    return tmp.textContent;
-  }).join(" ");
+  return day.details.map(htmlToPlainText).join(" ");
 }
 
 function openBuilder(plan) {

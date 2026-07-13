@@ -37,6 +37,14 @@ went to track your progress.
 - **Cross-device sync** — changes push automatically and merge by
   most-recent-edit per journal entry (deletions propagate too), with offline
   support via a per-user local cache.
+- **Plan sharing** — send any plan to another account by email address; it
+  lands in their "Shared with you" inbox on the Plans tab to accept or
+  dismiss. Accepted plans are re-sanitized through the same parsing pipeline
+  as uploads, so a shared plan can never inject markup into your account.
+- **Plan export** — download any plan as a **markdown table** (the app's own
+  upload format, so it round-trips) or open a **print-formatted PDF view**
+  (the browser's print dialog does "Save as PDF"; the layout is grid-style,
+  so even our own PDF importer can read it back).
 - **Backup** — export/import all your data as JSON. Mobile friendly.
 - **NEON//GRID design system** — the UI implements the owner's personal
   design system (cyberpunk/synthwave: near-black canvas, neon accents as
@@ -74,8 +82,12 @@ plans/             example plan file (the built-in plan's source)
 docs/              plan format reference
 ```
 
-**API:** `POST /api/register|login|logout`, `GET /api/me`, and
-`GET|PUT /api/data` (the signed-in user's state blob). Sessions are HttpOnly
+**API:** `POST /api/register|login|logout`, `GET /api/me`,
+`GET|PUT /api/data` (the signed-in user's state blob), and plan sharing via
+`POST /api/share` (deliver to a recipient's inbox by email),
+`GET /api/shares`, and `POST /api/shares/dismiss`. Share inboxes are capped
+at 50 items and sends are rate-limited. Note: sharing confirms whether an
+email has an account — fine for a group of training partners. Sessions are HttpOnly
 `SameSite=Lax` cookies (90-day expiry); passwords are scrypt-hashed with
 per-user salts; auth endpoints are rate-limited. Each user's data is a JSON
 file under `DATA_DIR` — no database to manage.

@@ -734,6 +734,14 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
   color: var(--neon-cyan);
 }
 
+.share-form-row {
+  list-style: none;
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--gridline);
+}
+.share-form-row .share-email { min-width: 220px; }
+.plan-row-actions .btn { padding: 7px 12px; font-size: 10px; }
+
 /* ---------- plan builder ---------- */
 
 .builder-head {
