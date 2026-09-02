@@ -45,7 +45,15 @@ went to track your progress.
   strength are measured in **time** instead (distance is disabled for them),
   reported in their own X-train column and stat tile.
 - **Progress tracking** — days to race, percent through the plan, workouts
-  completed, total miles, a miles-per-week chart, and a week-by-week table.
+  completed, total miles, plan adherence and a day streak, a miles-per-week
+  chart with the plan's own range behind it, an average-pace trend, and a
+  week-by-week table. Rest days never count against you, and an unlogged
+  today doesn't break a streak.
+- **Race week** — inside the final seven days the Today tab leads with
+  goal-pace splits (5K through the finish) computed from your own race
+  result, the fuelling numbers your plan actually specifies plus the total
+  they add up to over your predicted finish, and a checklist that syncs. A
+  goal ahead of your current fitness is flagged rather than quietly used.
 - **Cross-device sync** — changes push automatically and merge by
   most-recent-edit per journal entry (deletions propagate too), with offline
   support via a per-user local cache.

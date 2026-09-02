@@ -46,6 +46,7 @@ function emptyState() {
     plans: {}, schedules: {}, journal: {},
     activeScheduleId: null, activeUpdatedAt: null,
     profile: null, // {raceDist, raceTime, goalTime, updatedAt} for pace zones
+    checklists: {}, // race-week ticks, per schedule
   };
 }
 
@@ -481,6 +482,7 @@ function snapshotBase(st) {
   return {
     plans: stamps(st.plans),
     schedules: stamps(st.schedules),
+    checklists: stamps(st.checklists),
     journal: Object.fromEntries(
       Object.entries(st.journal || {}).map(([sid, j]) => [sid, stamps(j)])),
   };
@@ -544,6 +546,8 @@ function mergeStates(local, remote, base = null, found = null) {
     merged.activeScheduleId = remote.activeScheduleId;
     merged.activeUpdatedAt = remote.activeUpdatedAt;
   }
+  merged.checklists = mergeById(local.checklists, remote.checklists,
+    baseOf("checklists"), record("checklist"));
   merged.profile = ts(remote.profile?.updatedAt) > ts(local.profile?.updatedAt)
     ? remote.profile
     : (local.profile ?? remote.profile ?? null);
@@ -1043,6 +1047,137 @@ function renderOnboarding(el, message) {
   });
 }
 
+/* ----- race week (P2-9) -----
+ * In the final week the useful thing is not another workout card: it's the
+ * numbers you'll actually run on. Splits come from the runner's own pace
+ * zones; fuelling targets are lifted from the plan's own race-day text
+ * rather than invented here.
+ */
+const RACE_WEEK_DAYS = 7;
+const MARATHON_MILES = 26.21875;
+
+/* Pull the plan's own guidance ("75-90 g of carbs per hour") out of race day. */
+function raceFuelling(day) {
+  const text = htmlToPlainText(day.details.join(" "));
+  const grab = (re) => {
+    const m = text.match(re);
+    return m ? m[1].replace(/\s*[-–]\s*/, "–") : null;
+  };
+  return {
+    carbs: grab(/(\d+\s*(?:[-–]\s*\d+)?)\s*g\b[^.]{0,40}?carb/i),
+    fluid: grab(/(\d+\s*(?:[-–]\s*\d+)?)\s*oz\b[^.]{0,40}?(?:fluid|water|drink)/i),
+  };
+}
+
+/* Goal-pace splits. Prefers the runner's stated goal when it is consistent
+ * with current fitness, otherwise the VDOT-predicted time — never a number
+ * they have no business chasing on race day. */
+function racePlan() {
+  const vdot = currentVdot();
+  if (!vdot) return null;
+  const predicted = PaceEngine.equivalentRaceTime(vdot, 42195);
+  const goalSecs = state.profile && state.profile.goalTime
+    ? parseDuration(state.profile.goalTime) : null;
+  const useGoal = goalSecs && goalSecs >= predicted * 0.98;
+  const target = useGoal ? goalSecs : predicted;
+  const perMile = target / MARATHON_MILES;
+  const marks = [
+    ["5K", 3.10686], ["10K", 6.21371], ["10 mi", 10],
+    ["Half", 13.10937], ["20 mi", 20], ["Finish", MARATHON_MILES],
+  ];
+  return {
+    target,
+    perMile,
+    basedOn: useGoal ? "your goal time" : "your current fitness",
+    goalWasOptimistic: Boolean(goalSecs && !useGoal),
+    splits: marks.map(([label, miles]) => ({
+      label,
+      at: PaceEngine.formatClock(Math.round(perMile * miles)),
+    })),
+  };
+}
+
+const RACE_CHECKLIST = [
+  ["pace", "Know your opening pace — go out no faster than target"],
+  ["fuel", "Carry the gels/drink the plan calls for, and practise nothing new"],
+  ["kit", "Lay out kit, shoes and bib the night before"],
+  ["watch", "Charge the watch; set it to the fields you actually use"],
+  ["logistics", "Confirm start time, travel and bag drop"],
+  ["sleep", "Bank sleep earlier in the week — race-eve sleep matters least"],
+];
+
+function checklistFor(schedId) {
+  const rec = state.checklists && state.checklists[schedId];
+  return (rec && rec.items) || {};
+}
+
+function toggleChecklist(schedId, itemId, on) {
+  state.checklists ||= {};
+  const items = { ...checklistFor(schedId), [itemId]: on };
+  state.checklists[schedId] = { items, updatedAt: new Date().toISOString() };
+  saveState();
+}
+
+function raceWeekHTML(info) {
+  if (!info.isRaceGoal) return "";
+  const raceIdx = info.len - 1;
+  const daysOut = raceIdx - info.todayIdx;
+  if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
+
+  const fuel = raceFuelling(info.days[raceIdx]);
+  const plan = racePlan();
+  const ticked = checklistFor(info.sched.id);
+  const when = daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+
+  const splitRows = plan ? `
+    <p class="hint">Target ${PaceEngine.formatClock(Math.round(plan.target))} —
+      ${PaceEngine.formatPaceSec(plan.perMile)}/mi, based on ${plan.basedOn}.${
+        plan.goalWasOptimistic
+          ? " Your goal is ahead of what your last race predicts, so these splits use current fitness."
+          : ""}</p>
+    <div class="split-grid">
+      ${plan.splits.map((sp) => `
+        <div class="split"><b>${sp.label}</b><span>${sp.at}</span></div>`).join("")}
+    </div>`
+    : `<p class="hint">Add a recent race result in Settings → pace zones to see goal splits here.</p>`;
+
+  const fuelLine = (fuel.carbs || fuel.fluid)
+    ? `<p class="hint">Your plan says: ${[
+        fuel.carbs && `<strong>${esc(fuel.carbs)} g carbs/hour</strong>`,
+        fuel.fluid && `<strong>${esc(fuel.fluid)} oz fluid/hour</strong>`,
+      ].filter(Boolean).join(" · ")}${
+        plan ? ` — roughly ${Math.round(plan.target / 3600 * parseInt(fuel.carbs || "0", 10))}–${
+          Math.round(plan.target / 3600 * (parseInt((fuel.carbs || "0").split("–")[1] || fuel.carbs || "0", 10)))
+        } g over ${PaceEngine.formatClock(Math.round(plan.target))}.` : ""}</p>`
+    : "";
+
+  return `
+    <details class="race-week" id="race-week" open>
+      <summary><span class="race-week-title">🏁 Race week — ${when}</span></summary>
+      ${splitRows}
+      ${fuelLine}
+      <ul class="checklist">
+        ${RACE_CHECKLIST.map(([id, label]) => `
+          <li>
+            <label>
+              <input type="checkbox" class="race-check" data-item="${id}" ${ticked[id] ? "checked" : ""}>
+              <span>${esc(label)}</span>
+            </label>
+          </li>`).join("")}
+      </ul>
+    </details>`;
+}
+
+function wireRaceWeek(el, info) {
+  $$(".race-check", el).forEach((box) => {
+    box.addEventListener("change", () => {
+      toggleChecklist(info.sched.id, box.dataset.item, box.checked);
+      box.closest("li").classList.toggle("done", box.checked);
+    });
+    box.closest("li").classList.toggle("done", box.checked);
+  });
+}
+
 /* ----- sync conflicts ----- */
 
 function conflictSummary(entry) {
@@ -1202,7 +1337,7 @@ function renderToday() {
     wireConflicts(el);
   } else {
     const isRaceDay = info.days[ti].type === "race";
-    const parts = [conflictsHTML(),
+    const parts = [conflictsHTML(), raceWeekHTML(info),
       dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
     if (!state.profile) {
       parts.push(`<p class="hint pace-tip">tip: add a recent race result in
@@ -1218,6 +1353,7 @@ function renderToday() {
     }
     el.innerHTML = parts.join("");
     wireConflicts(el);
+    wireRaceWeek(el, info);
     const tip = $(".goto-pace-settings", el);
     if (tip) {
       tip.addEventListener("click", (ev) => {
@@ -1336,6 +1472,56 @@ function weeklyTotals(info) {
   });
 }
 
+/* ----- adherence & streaks (P2-10) -----
+ * "Am I actually doing the plan?" is the question people ask at week 8, and
+ * the journal already holds the answer. Rest days are honoured, not counted
+ * against you, and today is never held against you until it's over.
+ */
+function adherenceStats(info) {
+  const lastElapsed = Math.min(info.todayIdx, info.len - 1);
+  let due = 0, done = 0;
+  for (let i = 0; i <= lastElapsed; i++) {
+    if (info.days[i].type === "rest") continue;
+    due++;
+    const e = entryFor(i);
+    if (e && (e.status === "completed" || e.status === "modified")) done++;
+  }
+
+  // walk back from the most recent finished day; rest days carry the streak
+  let streak = 0;
+  let start = lastElapsed;
+  const todayEntry = start >= 0 ? entryFor(start) : null;
+  if (start === info.todayIdx && info.days[start] &&
+      info.days[start].type !== "rest" && !todayEntry) {
+    start--; // today isn't over — don't break a streak on it
+  }
+  for (let i = start; i >= 0; i--) {
+    const day = info.days[i];
+    if (day.type === "rest") { streak++; continue; }
+    const e = entryFor(i);
+    if (e && (e.status === "completed" || e.status === "modified")) streak++;
+    else break;
+  }
+
+  let best = 0, run = 0;
+  for (let i = 0; i <= lastElapsed; i++) {
+    const day = info.days[i];
+    const e = entryFor(i);
+    if (day.type === "rest" || (e && (e.status === "completed" || e.status === "modified"))) {
+      run++;
+      best = Math.max(best, run);
+    } else {
+      run = 0;
+    }
+  }
+
+  return {
+    due, done, streak, best,
+    pct: due ? Math.round((done / due) * 100) : null,
+    elapsed: lastElapsed >= 0,
+  };
+}
+
 function renderProgress() {
   const el = $("#tab-progress");
   const info = activeInfo();
@@ -1350,6 +1536,7 @@ function renderProgress() {
   const daysElapsed = Math.max(0, Math.min(ti + 1, info.len));
   const pct = Math.round((daysElapsed / info.len) * 100);
   const remaining = Math.max(0, info.len - 1 - ti);
+  const adherence = adherenceStats(info);
 
   const firstTile = info.isRaceGoal
     ? `<div class="stat-tile"><div class="stat-value">${remaining}</div><div class="stat-label">days to race</div></div>`
@@ -1381,6 +1568,15 @@ function renderProgress() {
       <div class="stat-tile"><div class="stat-value">${pct}%</div><div class="stat-label">through the plan</div></div>
       <div class="stat-tile"><div class="stat-value">${completed}</div><div class="stat-label">workouts completed</div></div>
       <div class="stat-tile"><div class="stat-value">${totalMiles}</div><div class="stat-label">miles logged</div></div>
+      ${adherence.elapsed && adherence.pct !== null ? `
+        <div class="stat-tile" title="${adherence.done} of ${adherence.due} scheduled runs so far (rest days excluded)">
+          <div class="stat-value">${adherence.pct}%</div>
+          <div class="stat-label">plan adherence</div>
+        </div>
+        <div class="stat-tile" title="Consecutive days on plan; rest days count, today doesn't count against you${adherence.best > adherence.streak ? ` · best so far ${adherence.best}` : ""}">
+          <div class="stat-value">${adherence.streak}</div>
+          <div class="stat-label">day streak${adherence.best > adherence.streak ? ` · best ${adherence.best}` : ""}</div>
+        </div>` : ""}
       ${totalXtrain ? `<div class="stat-tile"><div class="stat-value">${
         totalXtrainSeconds ? formatHoursMin(totalXtrainSeconds) : totalXtrain
       }</div><div class="stat-label">${
