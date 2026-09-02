@@ -293,18 +293,10 @@ function deleteEntry(i) {
   setEntry(i, { deleted: true, updatedAt: new Date().toISOString() });
 }
 
+/* Duration parsing lives in paces.js so it can be unit-tested; phone keypads
+ * have no colon, so "4530" and "45:30" must both mean 45 minutes 30 seconds. */
 function parseDuration(text) {
-  // "1:32:05" or "45:30" or "45" (minutes) -> seconds, or null
-  if (!text) return null;
-  const parts = text.trim().split(":").map((p) => p.trim());
-  if (parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
-  const nums = parts.map(Number);
-  let secs;
-  if (nums.length === 3) secs = nums[0] * 3600 + nums[1] * 60 + nums[2];
-  else if (nums.length === 2) secs = nums[0] * 60 + nums[1];
-  else if (nums.length === 1) secs = nums[0] * 60;
-  else return null;
-  return secs > 0 ? secs : null;
+  return PaceEngine.parseDuration(text);
 }
 
 function formatPace(secondsPerMile) {
@@ -1314,7 +1306,8 @@ function drawMileageChart(info, totals) {
   }).join("");
 
   container.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Bar chart of miles logged per training week" style="width:100%;height:auto;display:block">
+    <svg viewBox="0 0 ${W} ${H}" role="img" class="chart-svg"
+         aria-label="Bar chart of miles logged per training week">
       ${grid}
       <line x1="${margin.left}" x2="${W - margin.right}" y1="${margin.top + ih}" y2="${margin.top + ih}" class="baseline"/>
       ${bars}
@@ -1404,8 +1397,8 @@ function drawPaceTrend(info, totals) {
     `<text x="${x(idx)}" y="${H - 10}" class="axis-label" text-anchor="middle">${p.week}</text>`).join("");
 
   paceContainer.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Line chart of average pace per training week"
-         style="width:100%;height:auto;display:block">
+    <svg viewBox="0 0 ${W} ${H}" role="img" class="chart-svg"
+         aria-label="Line chart of average pace per training week">
       ${grid}
       <path class="pace-line" d="${path.trim()}"/>
       ${dots}
@@ -1962,8 +1955,25 @@ function renderSettings() {
       </div>
     </div>
     <div class="settings-card danger-zone">
-      <h2>Reset</h2>
-      <button id="reset-all" class="btn danger">Delete all my plans, schedules & journals</button>
+      <h2>Danger zone</h2>
+      <p class="hint">Clearing your training data keeps your account; deleting the
+      account removes everything permanently.</p>
+      <div class="inline-controls">
+        <button id="reset-all" class="btn danger">Clear plans, schedules &amp; journals</button>
+        <button id="delete-account" class="btn danger">Delete my account</button>
+      </div>
+      <div id="delete-account-confirm" hidden>
+        <p class="hint sync-error">This permanently deletes your account, every plan,
+        schedule and journal entry, and any pending shares. It cannot be undone —
+        export a backup first if you want a copy.</p>
+        <div class="inline-controls">
+          <input type="password" id="delete-password" placeholder="confirm your password"
+                 autocomplete="current-password">
+          <button id="delete-account-go" class="btn danger">Delete permanently</button>
+          <button id="delete-account-cancel" class="btn">Cancel</button>
+          <span id="delete-msg" class="hint"></span>
+        </div>
+      </div>
     </div>`;
 
   wireScheduleForm(el);
@@ -2058,6 +2068,54 @@ function renderSettings() {
       alert("Import complete!");
     } catch {
       alert("Sorry, that file doesn't look like a marathon-tracker backup.");
+    }
+  });
+
+  $("#delete-account").addEventListener("click", () => {
+    $("#delete-account-confirm").hidden = false;
+    $("#delete-password").focus();
+  });
+  $("#delete-account-cancel").addEventListener("click", () => {
+    $("#delete-account-confirm").hidden = true;
+    $("#delete-password").value = "";
+  });
+  $("#delete-account-go").addEventListener("click", async () => {
+    const msg = $("#delete-msg");
+    const password = $("#delete-password").value;
+    if (!password) {
+      msg.textContent = "Enter your password to confirm.";
+      msg.classList.add("sync-error");
+      return;
+    }
+    if (!confirm("Delete your account and all training data permanently?")) return;
+    msg.classList.remove("sync-error");
+    msg.textContent = "Deleting…";
+    try {
+      const res = await fetch("/api/account/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        msg.textContent = data.error === "wrong_password"
+          ? "That password isn't right." : "Couldn't delete the account — try again.";
+        msg.classList.add("sync-error");
+        return;
+      }
+      // nothing left to sync; drop every local trace of this account
+      clearTimeout(syncTimer);
+      pushPending = false;
+      localStorage.removeItem(cacheKey());
+      localStorage.removeItem(LAST_USER_KEY);
+      user = null;
+      state = emptyState();
+      authMode = "login";
+      render();
+      setAuthMode("login", "Your account and all its data have been deleted.");
+    } catch {
+      msg.textContent = "Can't reach the server.";
+      msg.classList.add("sync-error");
     }
   });
 
@@ -2341,7 +2399,7 @@ function openDay(i) {
         </label>
         <label>Total time
           <input type="text" name="duration" inputmode="numeric" pattern="[0-9:]*"
-                 value="${esc(entry.duration ?? "")}" placeholder="hh:mm:ss or mm:ss">
+                 value="${esc(entry.duration ?? "")}" placeholder="45:30 — or just 4530">
         </label>
         <label>Effort (RPE 1–10)
           <select name="rpe">${rpeOptions}</select>
@@ -2377,7 +2435,7 @@ function openDay(i) {
           </label>
           <label>Time<span class="second-time-req"></span>
             <input type="text" name="secondDuration" inputmode="numeric" pattern="[0-9:]*"
-                   value="${esc(existingSecond?.duration ?? "")}" placeholder="hh:mm:ss or mm:ss">
+                   value="${esc(existingSecond?.duration ?? "")}" placeholder="45:00 — or just 4500">
           </label>
           <label>Notes
             <input type="text" name="secondNotes" maxlength="300"
@@ -2428,6 +2486,18 @@ function openDay(i) {
     syncSecondFields();
     updatePace();
   });
+  // echo back how a colon-free entry was understood, so "4530" visibly
+  // becomes "45:30" rather than being silently misread
+  $$('#journal-form input[name="duration"], #journal-form input[name="secondDuration"]')
+    .forEach((input) => {
+      input.addEventListener("blur", () => {
+        const tidy = PaceEngine.normalizeDuration(input.value);
+        if (tidy && tidy !== input.value.trim()) {
+          input.value = tidy;
+          updatePace();
+        }
+      });
+    });
 
   $(".gpx-file", modal).addEventListener("change", async (ev) => {
     const file = ev.target.files[0];

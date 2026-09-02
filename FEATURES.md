@@ -40,9 +40,14 @@ between this being your training app and being your group's training app.
 
 | # | Item | Why | Effort |
 |---|------|-----|--------|
-| 5 | **Security headers** | No CSP, HSTS, `X-Content-Type-Options` or frame protection. The app renders user-authored plan text and accepts shared plans; CSP is the backstop if a sanitisation bug ever slips through. | S |
-| 6 | **Account deletion & data export** | No way for a user to remove their account. Export exists per-user; deletion doesn't. Basic obligation once other people have accounts. | S |
-| 7 | **Rate-limit persistence** | Auth throttling lives in memory and resets on every deploy/restart — trivially defeated on a platform that restarts often. Move the counter to disk alongside sessions. | S |
+| 5 | ~~**Security headers**~~ | ✅ **Done.** Strict CSP (no `unsafe-inline`, `frame-ancestors 'none'`), HSTS behind HTTPS, nosniff, frame and referrer policy. Enforcing it surfaced two inline `style` attributes, now moved to CSS. | S |
+| 6 | ~~**Account deletion**~~ | ✅ **Done.** Password-confirmed deletion removes the user record, training data, share inbox, index entry, sessions and pending tokens. (Export already existed.) | S |
+| 7 | ~~**Rate-limit persistence**~~ | ✅ **Done.** Counters mirror to disk on a 5 s throttle and reload on boot, so a redeploy no longer hands out a fresh budget. Verified by restarting a server mid-suite. | S |
+
+## P1 remaining
+
+| # | Item | Why | Effort |
+|---|------|-----|--------|
 | 8 | **Sync conflict visibility** | Merges are silent last-write-wins per entry. Two devices editing the same day means one edit vanishes with no notice. At minimum, detect and tell the user; ideally keep the loser in the notes. | M |
 
 ## P2 — the training experience
@@ -69,8 +74,8 @@ between this being your training app and being your group's training app.
 
 ## Suggested next move
 
-P0 is complete. P1 is next: security headers (#5), account deletion (#6),
-persistent rate limits (#7), and visible sync conflicts (#8).
+P0 and most of P1 are complete. Next: visible sync conflicts (#8), then the
+P2 training features.
 
 To switch email from "logged to the console" to real delivery, set
 `MAIL_PROVIDER=resend`, `RESEND_API_KEY`, `MAIL_FROM` and `APP_URL` on the

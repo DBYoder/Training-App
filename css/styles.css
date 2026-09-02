@@ -582,6 +582,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
 .chart-title { margin: 0 0 2px; }
 .chart-sub { margin: 0 0 12px; font-size: 0.85rem; color: var(--fg-muted); }
 
+/* charts scale to their container; kept in CSS so the CSP can forbid
+   inline style attributes entirely */
+.chart-svg { width: 100%; height: auto; display: block; }
 .viz-root .gridline { stroke: var(--gridline); stroke-width: 1; }
 .viz-root .baseline { stroke: var(--baseline); stroke-width: 1; }
 .viz-root .axis-label {

@@ -26,27 +26,42 @@ function launch() {
   });
 }
 
-/** Start the app on a free-ish port with an empty data dir. */
-async function startServer({ port, env = {} } = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-data-"));
-  const proc = spawn(process.execPath, [path.join(REPO, "server.js")], {
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, BACKUP_INTERVAL_HOURS: "0", ...env },
-    stdio: "ignore",
-  });
-  const base = `http://localhost:${port}`;
+async function waitForServer(base) {
   for (let i = 0; i < 100; i++) {
     try {
       const res = await fetch(base + "/api/me");
-      if (res.status === 401 || res.ok) break;
+      if (res.status === 401 || res.ok) return true;
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 100));
   }
+  throw new Error("server did not start at " + base);
+}
+
+/** Start the app on a port with an empty data dir (or an existing one). */
+async function startServer({ port, env = {}, dataDir } = {}) {
+  const dir = dataDir || fs.mkdtempSync(path.join(os.tmpdir(), "e2e-data-"));
+  let proc = spawn(process.execPath, [path.join(REPO, "server.js")], {
+    env: { ...process.env, PORT: String(port), DATA_DIR: dir, BACKUP_INTERVAL_HOURS: "0", ...env },
+    stdio: "ignore",
+  });
+  const base = `http://localhost:${port}`;
+  await waitForServer(base);
   return {
     base,
-    dataDir,
+    dataDir: dir,
+    /** Restart the process against the same volume, as a redeploy would. */
+    async restart() {
+      proc.kill();
+      await new Promise((r) => setTimeout(r, 300));
+      proc = spawn(process.execPath, [path.join(REPO, "server.js")], {
+        env: { ...process.env, PORT: String(port), DATA_DIR: dir, BACKUP_INTERVAL_HOURS: "0", ...env },
+        stdio: "ignore",
+      });
+      await waitForServer(base);
+    },
     stop() {
       proc.kill();
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      if (!dataDir) fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }

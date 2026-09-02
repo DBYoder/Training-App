@@ -94,7 +94,68 @@
       : `${m}:${String(s).padStart(2, "0")}`;
   }
 
+  /* ----- duration entry -----
+   * Phone keypads (inputmode=numeric) have no colon, so digits alone must
+   * work. Read them the way a stopwatch does — the trailing pair is seconds
+   * once there are 3+ digits — and keep the long-standing shorthand where
+   * one or two digits mean whole minutes.
+   *
+   *   "45"      -> 45:00     "930"    -> 9:30
+   *   "4530"    -> 45:30     "12200"  -> 1:22:00
+   *   "1:22:00" -> 1:22:00   "0:45"   -> 0:45
+   */
+  const MAX_DURATION_SEC = 24 * 3600;
+
+  function parseDuration(text) {
+    if (text === null || text === undefined) return null;
+    const raw = String(text).trim();
+    if (!raw) return null;
+
+    let h = 0, m = 0, sec = 0;
+    if (raw.includes(":")) {
+      const parts = raw.split(":").map((p) => p.trim());
+      if (parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
+      const n = parts.map(Number);
+      if (n.length === 3) [h, m, sec] = n;
+      else if (n.length === 2) [m, sec] = n;
+      else if (n.length === 1) [m] = n;
+      else return null;
+      // only the leading field may exceed 59 ("90:00" is a valid 90 minutes)
+      if (n.length === 3 && (m > 59 || sec > 59)) return null;
+      if (n.length === 2 && sec > 59) return null;
+    } else {
+      if (!/^\d+$/.test(raw)) return null;
+      if (raw.length <= 2) {
+        m = Number(raw);                                   // "45" = 45 minutes
+      } else if (raw.length <= 4) {
+        m = Number(raw.slice(0, -2));                      // "4530" = 45:30
+        sec = Number(raw.slice(-2));
+      } else if (raw.length <= 6) {
+        h = Number(raw.slice(0, -4));                      // "12200" = 1:22:00
+        m = Number(raw.slice(-4, -2));
+        sec = Number(raw.slice(-2));
+      } else {
+        return null;
+      }
+      if (m > 59 && raw.length > 4) return null;
+      if (sec > 59) return null;
+    }
+
+    const total = h * 3600 + m * 60 + sec;
+    // a typo like "45300" would otherwise sail through as a 12-hour run
+    return total > 0 && total <= MAX_DURATION_SEC ? total : null;
+  }
+
+  /** Canonical h:mm:ss / m:ss for echoing back what was understood. */
+  function normalizeDuration(text) {
+    const secs = parseDuration(text);
+    return secs === null ? null : formatClock(secs);
+  }
+
   exportsTarget.PaceEngine = {
+    parseDuration,
+    normalizeDuration,
+    MAX_DURATION_SEC,
     RACE_DISTANCES,
     vdotFromRace,
     equivalentRaceTime,

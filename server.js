@@ -194,9 +194,29 @@ async function sendVerificationEmail(req, user) {
 
 /* ---------- rate limiting for auth endpoints ---------- */
 
-const authAttempts = new Map(); // ip -> {count, resetAt}
+/* Counters live in memory but are mirrored to disk, because a platform that
+ * restarts on every deploy would otherwise hand an attacker a fresh budget
+ * whenever they triggered one. Writes are throttled so a burst of failed
+ * logins doesn't mean a write per request. */
+const RATE_FILE = path.join(DATA_DIR, "ratelimit.json");
 const AUTH_LIMIT = 30;
 const AUTH_WINDOW_MS = 15 * 60 * 1000;
+const RATE_FLUSH_MS = 5 * 1000;
+
+const authAttempts = new Map(Object.entries(readJson(RATE_FILE, {})));
+let ratePendingFlush = null;
+
+function flushRateLimits() {
+  ratePendingFlush = null;
+  const now = Date.now();
+  const out = {};
+  for (const [ip, rec] of authAttempts) {
+    if (rec.resetAt > now) out[ip] = rec;
+  }
+  try {
+    writeJson(RATE_FILE, out);
+  } catch { /* best effort: never fail a request over this */ }
+}
 
 function rateLimited(req) {
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
@@ -208,7 +228,15 @@ function rateLimited(req) {
     authAttempts.set(ip, rec);
   }
   rec.count++;
-  if (authAttempts.size > 10000) authAttempts.clear(); // crude memory cap
+  if (authAttempts.size > 10000) {
+    // drop expired entries before resorting to a full clear
+    for (const [k, v] of authAttempts) if (v.resetAt < now) authAttempts.delete(k);
+    if (authAttempts.size > 10000) authAttempts.clear();
+  }
+  if (!ratePendingFlush) {
+    ratePendingFlush = setTimeout(flushRateLimits, RATE_FLUSH_MS);
+    ratePendingFlush.unref?.();
+  }
   return rec.count > AUTH_LIMIT;
 }
 
@@ -218,6 +246,7 @@ function sendJson(res, status, obj, extraHeaders) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
     ...extraHeaders,
   });
   res.end(JSON.stringify(obj));
@@ -457,6 +486,45 @@ function handleResendVerification(req, res) {
     });
 }
 
+/* ---------- account deletion (P1-6) ----------
+ * Removes the account and everything it owns. Requires the current password,
+ * so a stolen session alone can't destroy someone's training history. */
+function handleDeleteAccount(req, res) {
+  const session = sessionFor(req);
+  if (!session) return sendJson(res, 401, { error: "not_logged_in" });
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  readJsonBody(req, res, MAX_AUTH_BODY_BYTES, (body) => {
+    const user = readJson(userFile(session.userId), null);
+    if (!user) return sendJson(res, 401, { error: "not_logged_in" });
+    if (!verifyPassword(String(body.password || ""), user.salt, user.passwordHash)) {
+      return sendJson(res, 403, { error: "wrong_password" });
+    }
+
+    const rm = (file) => { try { fs.unlinkSync(file); } catch { /* already gone */ } };
+    rm(userDataFile(user.id));
+    rm(inboxFile(user.id));
+    rm(userFile(user.id));
+
+    const index = readJson(USERS_INDEX_FILE, {});
+    delete index[user.email];
+    writeJson(USERS_INDEX_FILE, index);
+
+    for (const [tok, sess] of Object.entries(sessions)) {
+      if (sess.userId === user.id) delete sessions[tok];
+    }
+    writeJson(SESSIONS_FILE, sessions);
+
+    const tokens = readTokens();
+    let tokensChanged = false;
+    for (const [k, v] of Object.entries(tokens)) {
+      if (v.userId === user.id) { delete tokens[k]; tokensChanged = true; }
+    }
+    if (tokensChanged) writeJson(TOKENS_FILE, tokens);
+
+    sendJson(res, 200, { ok: true }, { "Set-Cookie": sessionCookie(req, "", 0) });
+  });
+}
+
 /* ---------- plan sharing (per-recipient inbox) ---------- */
 
 function handleShareSend(req, res) {
@@ -573,9 +641,45 @@ const API_ROUTES = {
   "POST /api/reset": handleResetPassword,
   "POST /api/verify": handleVerifyEmail,
   "POST /api/verify/resend": handleResendVerification,
+  "POST /api/account/delete": handleDeleteAccount,
 };
 
 /* ---------- static files ---------- */
+
+/* ---------- security headers (P1-5) ----------
+ * The app renders plan text authored by users and accepted from other
+ * accounts. Sanitisation is the primary defence; CSP is the backstop if a
+ * sanitisation bug ever slips through. */
+function securityHeaders(req, isHtml) {
+  const headers = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    // emailed links carry tokens; keep them out of any Referer header
+    "X-Frame-Options": "DENY",
+  };
+  if (req.headers["x-forwarded-proto"] === "https") {
+    headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+  }
+  if (isHtml) {
+    headers["Content-Security-Policy"] = [
+      "default-src 'self'",
+      // pdf.js is vendored and loaded as a module; no inline or remote script
+      "script-src 'self'",
+      "style-src 'self'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "connect-src 'self'",
+      // plan text can contain links, but nothing may frame or embed us
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "base-uri 'none'",
+      "object-src 'none'",
+      // pdf.js parses in a worker created from a same-origin script
+      "worker-src 'self' blob:",
+    ].join("; ");
+  }
+  return headers;
+}
 
 function handleStatic(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -606,11 +710,12 @@ function handleStatic(req, res) {
   };
   if (ims && !Number.isNaN(Date.parse(ims)) &&
       Math.floor(stat.mtimeMs / 1000) <= Math.floor(Date.parse(ims) / 1000)) {
-    res.writeHead(304, headers);
+    res.writeHead(304, { ...headers, ...securityHeaders(req, false) });
     return res.end();
   }
   const ext = path.extname(filePath).toLowerCase();
   headers["Content-Type"] = MIME[ext] || "application/octet-stream";
+  Object.assign(headers, securityHeaders(req, ext === ".html"));
   res.writeHead(200, headers);
   if (req.method === "HEAD") return res.end();
   fs.createReadStream(filePath).pipe(res);
