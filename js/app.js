@@ -671,6 +671,12 @@ function render() {
     return;
   }
   renderCountdownChip();
+  // The Race tab only means something for a schedule anchored to a race;
+  // a start-date block has no race day to plan for.
+  const raceInfo = activeInfo();
+  const hasRace = Boolean(raceInfo && raceInfo.isRaceGoal);
+  $("#tabbtn-race").hidden = !hasRace;
+  if (activeTab === "race" && !hasRace) activeTab = "today";
   $$("#tabs button").forEach((b) => {
     const selected = b.dataset.tab === activeTab;
     b.classList.toggle("active", selected);
@@ -680,6 +686,7 @@ function render() {
   if (activeTab === "today") renderToday();
   if (activeTab === "schedule") renderScheduleTab();
   if (activeTab === "progress") renderProgress();
+  if (activeTab === "race") renderRace();
   if (activeTab === "plans") renderPlans();
   if (activeTab === "settings") renderSettings();
 }
@@ -1192,16 +1199,41 @@ function saveChecklist(schedId, items) {
   saveState();
 }
 
-function raceWeekHTML(info) {
-  if (!info.isRaceGoal) return "";
+/* The race plan, as its own page.
+ *
+ * This used to appear only inside the final seven days, on the Today tab —
+ * which is the one week you can no longer act on what it tells you. Splits,
+ * fuelling and the checklist are decisions to make and rehearse during
+ * training, so the page is available for the whole block and only changes
+ * its framing as the race gets close. */
+function raceHTML(info) {
+  if (!info.isRaceGoal) {
+    return `<div class="notice">
+      <h2>No goal race</h2>
+      <p><strong>${esc(info.sched.name)}</strong> runs forward from a start date
+      rather than backward from a race, so there's no race day to plan for.
+      Create a race-anchored schedule in Settings → New schedule to use this tab.</p>
+    </div>`;
+  }
   const raceIdx = info.len - 1;
   const daysOut = raceIdx - info.todayIdx;
-  if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
 
   const planFuel = raceFuelling(info.days[raceIdx]);
   const plan = racePlan();
   const items = checklistFor(info.sched.id, { seed: true });
-  const when = daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const when = daysOut < 0
+    ? "Run"
+    : daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const heading = daysOut < 0
+    ? `🏁 ${esc(info.sched.name)} — done`
+    : daysOut <= RACE_WEEK_DAYS
+      ? `🏁 Race week — ${when}`
+      : `🏁 Race day — ${when}, ${FMT_LONG.format(info.end)}`;
+  // Far out, the point is to rehearse; close in, it's the actual plan.
+  const framing = daysOut > RACE_WEEK_DAYS
+    ? `<p class="hint">Nothing here is locked in. Work it out now and rehearse it on
+       your long runs — race week is a bad time to be deciding how much you'll drink.</p>`
+    : "";
 
   const splitRows = plan ? `
     <p class="hint">Target ${PaceEngine.formatClock(Math.round(plan.target))} —
@@ -1249,7 +1281,8 @@ function raceWeekHTML(info) {
 
   return `
     <details class="race-week" id="race-week" open>
-      <summary><span class="race-week-title">🏁 Race week — ${when}</span></summary>
+      <summary><span class="race-week-title">${heading}</span></summary>
+      ${framing}
       ${splitRows}
       ${fuelBlock}
       <h3 class="checklist-title">// my checklist</h3>
@@ -1267,12 +1300,42 @@ function raceWeekHTML(info) {
       ${items.length ? "" : '<p class="hint">Your checklist is empty — add what matters to you.</p>'}
       <div class="inline-controls checklist-add">
         <input type="text" id="checklist-new" maxlength="${MAX_CHECKLIST_TEXT}"
+               aria-label="New checklist item"
                placeholder="add your own — e.g. drop bag at gear check">
         <button type="button" id="checklist-add" class="btn">Add</button>
       </div>
       <p class="hint">These are yours: edit the list however you like. It syncs
       with your account and is kept per schedule.</p>
     </details>`;
+}
+
+function renderRace() {
+  const el = $("#tab-race");
+  const info = activeInfo();
+  if (!info) {
+    el.innerHTML = `<div class="notice"><h2>No schedule yet</h2>
+      <p>Create one in Settings → New schedule and your race plan lives here.</p></div>`;
+    return;
+  }
+  el.innerHTML = raceHTML(info);
+  wireRaceWeek(el, info);
+}
+
+/* A pointer, not a copy: during race week Today says the plan is ready and
+ * where it lives, so the two tabs never show the same editable fields. */
+function raceWeekBannerHTML(info) {
+  if (!info.isRaceGoal) return "";
+  const daysOut = (info.len - 1) - info.todayIdx;
+  if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
+  const when = daysOut === 0 ? "today" : `in ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const done = checklistFor(info.sched.id).filter((i) => i.done).length;
+  const total = checklistFor(info.sched.id).length;
+  return `
+    <div class="notice race-banner">
+      <h2>🏁 Race week — ${when}</h2>
+      <p>Your splits, fuelling and checklist${total ? ` (${done}/${total} ticked)` : ""}
+      are on the <a href="#" class="goto-race">Race tab</a>.</p>
+    </div>`;
 }
 
 function wireRaceWeek(el, info) {
@@ -1525,7 +1588,7 @@ function renderToday() {
     wireConflicts(el);
   } else {
     const isRaceDay = info.days[ti].type === "race";
-    const parts = [conflictsHTML(), raceWeekHTML(info),
+    const parts = [conflictsHTML(), raceWeekBannerHTML(info),
       dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
     if (!state.profile) {
       parts.push(`<p class="hint pace-tip">tip: add a recent race result in
@@ -1541,7 +1604,14 @@ function renderToday() {
     }
     el.innerHTML = parts.join("");
     wireConflicts(el);
-    wireRaceWeek(el, info);
+    const toRace = $(".goto-race", el);
+    if (toRace) {
+      toRace.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        activeTab = "race";
+        render();
+      });
+    }
     const tip = $(".goto-pace-settings", el);
     if (tip) {
       tip.addEventListener("click", (ev) => {

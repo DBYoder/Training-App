@@ -22,6 +22,7 @@ const SUITES = [
   ["race-week-adherence.js", 4608],
   ["keyboard-a11y.js", 4609],
   ["plan-builder.js", 4610],
+  ["race-tab.js", 4611],
 ];
 
 let failed = [];

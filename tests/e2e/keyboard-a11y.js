@@ -97,7 +97,7 @@ async function focusRing(page, selector) {
     await L.register(page, server.base, "a11y@example.com");
     await L.createSchedule(page, { anchor: L.upcoming(0, 32) });
 
-    for (const tab of ["today", "schedule", "progress", "plans", "settings"]) {
+    for (const tab of ["today", "schedule", "progress", "race", "plans", "settings"]) {
       await page.click(`#tabs button[data-tab="${tab}"]`);
       await page.waitForTimeout(250);
       nameless = await page.evaluate(NAMELESS);

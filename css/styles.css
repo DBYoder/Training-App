@@ -1255,6 +1255,15 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
 /* ---------- race week ---------- */
 
+/* The Today-tab pointer at the race plan. Same magenta as the plan itself,
+   so the connection between the two reads without a label. */
+.race-banner {
+  border-color: var(--neon-magenta);
+  box-shadow: 0 0 8px rgba(255, 0, 170, 0.2);
+}
+.race-banner h2 { color: var(--neon-magenta); }
+.race-banner a { color: var(--neon-magenta); }
+
 .race-week {
   background: var(--bg-card);
   border: 1px solid var(--neon-magenta);

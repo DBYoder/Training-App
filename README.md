@@ -52,9 +52,14 @@ went to track your progress.
   chart with the plan's own range behind it, an average-pace trend, and a
   week-by-week table. Rest days never count against you, and an unlogged
   today doesn't break a streak.
-- **Race week** — inside the final seven days the Today tab leads with
-  goal-pace splits (5K through the finish) computed from your own race
-  result, plus **your own fuelling plan and checklist**. Both are seeded
+- **Race tab** — race planning has its own tab, available for the whole
+  training block rather than only in the final week: goal-pace splits (5K
+  through the finish) computed from your own race result, plus **your own
+  fuelling plan and checklist**. Fuelling and pacing are things you rehearse
+  on long runs, so the page is there from day one and only changes its
+  framing as race day approaches; during the final seven days the Today tab
+  shows a banner linking to it. The tab hides itself for start-date
+  schedules, which have no race day. Both plans are seeded
   from your training plan (its carbs/hour and fluid/hour, a few starter
   checklist items) and then fully yours: change the numbers, write what
   you'll carry and when, add or delete any checklist item. The carb total
