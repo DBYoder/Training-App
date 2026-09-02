@@ -4,7 +4,10 @@
   "description": "Web app that back-schedules the SWAP 12-week marathon plan from your race date, with a daily workout view and training journal.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "backup": "node backup.js",
+    "backup:list": "node backup.js --list",
+    "test": "node tests/paces.test.js && node tests/backup.test.js"
   },
   "engines": {
     "node": ">=18"

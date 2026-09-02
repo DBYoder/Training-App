@@ -116,6 +116,32 @@ last-write-wins per item (plans, schedules, and individual journal entries each
 carry `updatedAt`); deletions are tombstones so they win merges and propagate
 to other devices.
 
+## Backups
+
+Everything lives on one volume, so a volume loss is the only unrecoverable
+failure this app has. Three layers guard it:
+
+1. **Scheduled snapshots** — the server writes a gzipped snapshot of all
+   accounts, plans and journals into `DATA_DIR/backups` every 24 h, keeping
+   the newest 14. Tune with `BACKUP_INTERVAL_HOURS` (0 disables) and
+   `BACKUP_KEEP`. Sessions are deliberately excluded, so a leaked snapshot
+   grants nobody a login.
+2. **Off-box copies** — set `ADMIN_TOKEN` on the service to enable
+   `GET /api/admin/backup` (Bearer auth; the route 404s when the variable is
+   unset). `.github/workflows/backup.yml` pulls one nightly and keeps it as a
+   GitHub artifact for 90 days — set the `APP_URL` and `ADMIN_TOKEN`
+   repository secrets to turn it on.
+3. **Manual** — `npm run backup`, `npm run backup:list`.
+
+Restore into a volume with:
+
+```bash
+DATA_DIR=/app/data node backup.js --restore path/to/backup.json.gz --force
+```
+
+Treat snapshots as sensitive: they contain email addresses and password
+hashes (hashes, not passwords).
+
 **Limitations to know about:** there's no password-reset flow (the server
 never learns usable emails for sending mail) — resetting a forgotten password
 currently means an admin editing the data directory. Fine for a small group of

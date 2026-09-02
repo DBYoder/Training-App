@@ -14,6 +14,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const backup = require("./backup.js");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
@@ -330,6 +331,42 @@ function handleShareDismiss(req, res) {
   });
 }
 
+/* ---------- admin: pull a snapshot off the box ----------
+ * Disabled unless ADMIN_TOKEN is set. Lets an external scheduler (see
+ * .github/workflows/backup.yml) keep copies somewhere the volume isn't. */
+function timingSafeEqualStr(a, b) {
+  const ab = Buffer.from(String(a)), bb = Buffer.from(String(b));
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
+function handleAdminBackup(req, res) {
+  const token = process.env.ADMIN_TOKEN;
+  if (!token) return sendJson(res, 404, { error: "not_found" }); // feature off
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  const auth = req.headers.authorization || "";
+  const supplied = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!supplied || !timingSafeEqualStr(supplied, token)) {
+    return sendJson(res, 401, { error: "unauthorized" });
+  }
+  let snapshot;
+  try {
+    snapshot = backup.writeSnapshot(DATA_DIR, {
+      keep: Number(process.env.BACKUP_KEEP) || undefined,
+    });
+  } catch (e) {
+    return sendJson(res, 500, { error: "backup_failed" });
+  }
+  const body = fs.readFileSync(snapshot.file);
+  res.writeHead(200, {
+    "Content-Type": "application/gzip",
+    "Content-Length": body.length,
+    "Content-Disposition": `attachment; filename="${path.basename(snapshot.file)}"`,
+    "Cache-Control": "no-store",
+    "X-Backup-Counts": JSON.stringify(snapshot.counts),
+  });
+  res.end(body);
+}
+
 const API_ROUTES = {
   "POST /api/register": handleRegister,
   "POST /api/login": handleLogin,
@@ -340,6 +377,7 @@ const API_ROUTES = {
   "POST /api/share": handleShareSend,
   "GET /api/shares": handleSharesList,
   "POST /api/shares/dismiss": handleShareDismiss,
+  "GET /api/admin/backup": handleAdminBackup,
 };
 
 /* ---------- static files ---------- */
@@ -393,4 +431,14 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Marathon Trainer listening on port ${PORT} (data dir: ${DATA_DIR})`);
+  // on-volume snapshots with rotation; set BACKUP_INTERVAL_HOURS=0 to disable
+  const hours = process.env.BACKUP_INTERVAL_HOURS === undefined
+    ? 24 : Number(process.env.BACKUP_INTERVAL_HOURS);
+  if (hours > 0) {
+    backup.startScheduledBackups(DATA_DIR, {
+      hours, keep: Number(process.env.BACKUP_KEEP) || undefined,
+    });
+    console.log(`[backup] snapshots every ${hours}h into ${backup.backupsDir(DATA_DIR)}` +
+      (process.env.ADMIN_TOKEN ? " · GET /api/admin/backup enabled" : " · set ADMIN_TOKEN to pull them off-box"));
+  }
 });

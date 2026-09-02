@@ -1,0 +1,51 @@
+name: Off-box backup
+
+# Snapshots live on the Railway volume, which is exactly what a volume loss
+# destroys. This pulls one to GitHub every day so a copy exists elsewhere.
+#
+# Requires two repository secrets:
+#   APP_URL      https://your-app.up.railway.app   (no trailing slash)
+#   ADMIN_TOKEN  the same value set on the Railway service
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily, 09:17 UTC
+  workflow_dispatch: {}
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull snapshot
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::error::APP_URL and ADMIN_TOKEN repository secrets must be set"
+            exit 1
+          fi
+          mkdir -p out
+          code=$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -D out/headers.txt -o "out/backup.json.gz" \
+            -w '%{http_code}' "${APP_URL}/api/admin/backup")
+          echo "HTTP ${code}"
+          # a snapshot that won't gunzip is not a backup
+          gunzip -t "out/backup.json.gz"
+          node -e '
+            const s = JSON.parse(require("zlib").gunzipSync(
+              require("fs").readFileSync("out/backup.json.gz")).toString());
+            if (!s.version || !s.counts) throw new Error("snapshot missing version/counts");
+            if (!s.counts.users) throw new Error("snapshot contains zero users — refusing to call this good");
+            console.log(`snapshot ${s.createdAt}:`, JSON.stringify(s.counts));
+          '
+          rm -f out/headers.txt
+
+      - name: Store snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ github.run_id }}
+          path: out/backup.json.gz
+          retention-days: 90
+          if-no-files-found: error
