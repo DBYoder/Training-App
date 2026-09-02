@@ -1,48 +1,76 @@
-# Feature roadmap
+# Roadmap
 
-Gaps found by running a full dogfood session (7 weeks into the SWAP plan,
-marathon 34 days out), ordered by how hard they bite during real training.
+## Shipped
 
-## Tier 1 — changes daily use
+**Tier 1 — daily use**
+- Target pace zones (Daniels VDOT, validated against published tables)
+- Quick-log "✓ done" and an unlogged-yesterday card
+- Day swapping within a week, with undo
 
-| # | Feature | Status |
-|---|---------|--------|
-| 1 | **Target pace zones** — enter a recent race result; the app computes VDOT (Daniels/Gilbert model) and shows personal paces (easy range, M, T/1-hour, 10k, 5k, 3k) inline on every workout that names an effort. Goal time gets a reality check against current fitness instead of silently inflating zones. | ✅ built |
-| 2 | **Quick-log + yesterday** — one-tap "✓ done" on day cards, and an unlogged-yesterday card on the Today tab so back-filling doesn't require the Schedule tab. | ✅ built |
-| 3 | **Day swapping** — swap a workout with another day in the same week ("it rained, long run moves to Sunday") without editing the plan; swapped days are tagged, undoable, and journals stay pinned to their dates. | ✅ built |
+**Tier 2 — depth**
+- Planned-vs-actual mileage band; rest days excluded from "days logged"
+- Average-pace-per-week trend
+- Calendar (ICS) export
 
-## Tier 2 — deepens the payoff
+**Tier 3 — selected**
+- Installable PWA with an offline shell
+- GPX import (watch / Strava "Export GPX"), main and second session
+- Optional second session per day (double / x-train / strength), with
+  cross-training measured in time rather than miles
+- Mobile legibility pass: WCAG AA across every screen, 1:1 chart labels
 
-| # | Feature | Status |
-|---|---------|--------|
-| 4 | **Planned vs. actual mileage** — the plan's listed mileage ranges render as a dashed band behind the actual bars and a "planned mi" table column; rest days no longer count in "days logged". | ✅ built |
-| 5 | **Pace trends** — average pace per week as a line chart (higher = faster) from journaled time + distance. | ✅ built |
-| 6 | **Calendar (ICS) export** — download a schedule as an .ics of all-day events (RFC 5545-folded) for Google/Apple Calendar import. | ✅ built |
+---
 
-## Tier 3 — bigger bets
+# Prioritized improvements
 
-| # | Feature | Status |
-|---|---------|--------|
-| 7 | Shoe tracking with cumulative mileage | skipped (per owner) |
-| 8 | Race-week checklist (fueling notes + goal-pace band splits) | idea |
-| 9 | **PWA** — web app manifest + service worker: installs to the home screen, launches standalone, and the shell works offline (training data already lives in localStorage). | ✅ built |
-| 10 | **GPX import** — import a `.gpx` from a watch or Strava's "Export GPX" into a journal entry; fills distance (haversine) and elapsed time, auto-sets completed, warns on a date mismatch. Full Strava OAuth is a later step; file import needs no API registration. | ✅ built |
-| 11 | Password reset via a mail provider | skipped for now (per owner) |
+Ordered by risk × likelihood ÷ effort, not by how interesting they are. The
+theme of the top tier is **"safe to hand to other people"** — that is the gap
+between this being your training app and being your group's training app.
 
-## Pace-zone accuracy notes (feature 1)
+## P0 — do before more people depend on it
 
-- Model: Daniels/Gilbert VDOT — published equations, not heuristics.
-  - `VO2(v) = -4.60 + 0.182258·v + 0.000104·v²` (v in m/min)
-  - `%VO2max(t) = 0.8 + 0.1894393·e^(−0.012778·t) + 0.2989558·e^(−0.1932605·t)` (t in min)
-  - VDOT = VO2 at race velocity ÷ %VO2max at race duration.
-- Zones from their definitions: easy = 62–74 %VDOT (a range, honestly wide);
-  M/10k/5k/3k = equivalent-race paces solved numerically; threshold = the
-  pace of a 60-minute race (`%VO2max(60) ≈ 88.8 %VDOT`), which is exactly the
-  plan's "1-hour effort".
-- Implementation is unit-tested against known VDOT anchors (19:57 5k ⇒ VDOT
-  ≈ 50 ⇒ marathon ≈ 3:10:49, 10k ≈ 41:21) and round-trip consistency across
-  VDOT 30–65 and all distances.
-- Zones derive only from the entered race result. A goal time is compared
-  against the equivalent marathon prediction and flagged when it outruns
-  current fitness. Fresher input (like the plan's week-9 predictor tempo)
-  beats an old PR.
+| # | Item | Why now | Effort |
+|---|------|---------|--------|
+| 1 | **Automated volume backups** | The single unrecoverable failure. Every account, plan and journal lives on one Railway volume with no snapshot. A volume loss or a bad `DATA_DIR` change destroys a training block mid-cycle with no way back. Nightly tarball to object storage (or a scheduled job that commits an encrypted dump) fixes it. | S |
+| 2 | **Password reset** | Today a forgotten password means an admin hand-editing JSON on the volume. That is not something you can ask a training partner to accept. Needs a mail provider (Resend/Postmark, free at this volume) plus a token flow. Unblocks #3. | M |
+| 3 | **Email verification** | Sharing targets accounts *by email address*. An unverified signup can squat an address and receive plans meant for someone else. Same mail provider as #2, so do them together. | S |
+| 4 | **Restore the e2e suites + CI** | Six of the eight suites I wrote (multi-user isolation, Monday alignment/PDF, onboarding, plan builder, share/export, pace zones) were lost when the scratch directory cleared — only `second-session` and `mobile-a11y` are in the repo. Nothing runs on push. The app's riskiest logic (auth isolation, sanitisation of shared plans, schedule maths) currently has no standing guard. | M |
+
+## P1 — trust and correctness
+
+| # | Item | Why | Effort |
+|---|------|-----|--------|
+| 5 | **Security headers** | No CSP, HSTS, `X-Content-Type-Options` or frame protection. The app renders user-authored plan text and accepts shared plans; CSP is the backstop if a sanitisation bug ever slips through. | S |
+| 6 | **Account deletion & data export** | No way for a user to remove their account. Export exists per-user; deletion doesn't. Basic obligation once other people have accounts. | S |
+| 7 | **Rate-limit persistence** | Auth throttling lives in memory and resets on every deploy/restart — trivially defeated on a platform that restarts often. Move the counter to disk alongside sessions. | S |
+| 8 | **Sync conflict visibility** | Merges are silent last-write-wins per entry. Two devices editing the same day means one edit vanishes with no notice. At minimum, detect and tell the user; ideally keep the loser in the notes. | M |
+
+## P2 — the training experience
+
+| # | Item | Why | Effort |
+|---|------|-----|--------|
+| 9 | **Race-week checklist** | The last unbuilt item from the dogfood session: surface the plan's own fueling guidance ("75–90 g carbs/hr") plus goal-pace splits as a checklist in the final week, when it actually matters. | M |
+| 10 | **Adherence / streak view** | Journals hold the data; nothing summarises "how faithfully am I hitting the plan?" over time. A simple completion-rate trend answers the question people actually ask at week 8. | S |
+| 11 | **Full Strava integration** | Gated on you registering a Strava API app, and on their athlete-capacity review before partners can connect. GPX import covers the case today. | L |
+| 12 | **Accessibility beyond contrast** | Contrast and sizing are done; keyboard focus order, visible focus rings, screen-reader labels and `prefers-reduced-motion` (the design leans on glow and transitions) are not. | M |
+| 13 | **Plan-import robustness** | Scanned/photo PDFs fail (needs OCR); day-type classification is heuristic and disagreed with hand-tagging on 2 of 84 days. Let users correct a day's type in the builder instead of chasing parser accuracy. | S |
+
+## P3 — only if it grows
+
+| # | Item | Trigger |
+|---|------|---------|
+| 14 | SQLite instead of JSON files | ~100+ users, or when you want real queries/metrics |
+| 15 | Postgres + stateless server + replicas | 1,000+ users, or a need for uptime guarantees |
+| 16 | Delta sync instead of whole-blob PUT | When state blobs get large enough to feel slow |
+| 17 | Split `js/app.js` (2,585 lines) into modules | When more than one person edits it |
+| 18 | Shoe mileage tracking | Deferred by owner |
+
+---
+
+## Suggested next move
+
+**#1 and #4 together.** Backups remove the only failure that can't be undone,
+and restoring the test suites protects everything already built — including
+the auth isolation and shared-plan sanitisation that guard other people's
+data. #2 + #3 follow immediately if you're adding training partners, and they
+need one decision from you: which mail provider.
