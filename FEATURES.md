@@ -44,12 +44,6 @@ between this being your training app and being your group's training app.
 | 6 | ~~**Account deletion**~~ | ✅ **Done.** Password-confirmed deletion removes the user record, training data, share inbox, index entry, sessions and pending tokens. (Export already existed.) | S |
 | 7 | ~~**Rate-limit persistence**~~ | ✅ **Done.** Counters mirror to disk on a 5 s throttle and reload on boot, so a redeploy no longer hands out a fresh budget. Verified by restarting a server mid-suite. | S |
 
-## P1 remaining
-
-| # | Item | Why | Effort |
-|---|------|-----|--------|
-| 8 | **Sync conflict visibility** | Merges are silent last-write-wins per entry. Two devices editing the same day means one edit vanishes with no notice. At minimum, detect and tell the user; ideally keep the loser in the notes. | M |
-
 ## P2 — the training experience
 
 | # | Item | Why | Effort |
@@ -74,8 +68,13 @@ between this being your training app and being your group's training app.
 
 ## Suggested next move
 
-P0 and most of P1 are complete. Next: visible sync conflicts (#8), then the
-P2 training features.
+P0 and P1 are complete (#8, sync conflicts, shipped: each device remembers
+the state at its last sync, so a merge can tell a real conflict from a
+one-sided change, and the replaced edit is shown with a one-click restore).
+
+Next up is P2 — the race-week checklist (#9) and adherence view (#10) are the
+two that runners actually feel; #11 Strava still waits on you registering an
+API app.
 
 To switch email from "logged to the console" to real delivery, set
 `MAIL_PROVIDER=resend`, `RESEND_API_KEY`, `MAIL_FROM` and `APP_URL` on the

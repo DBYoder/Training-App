@@ -18,6 +18,7 @@ const SUITES = [
   ["second-session.js", 4603],
   ["mobile-a11y.js", 4604],
   ["hardening.js", 4606],
+  ["sync-conflicts.js", 4607],
 ];
 
 let failed = [];

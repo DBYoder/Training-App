@@ -116,6 +116,13 @@ last-write-wins per item (plans, schedules, and individual journal entries each
 carry `updatedAt`); deletions are tombstones so they win merges and propagate
 to other devices.
 
+Each device also remembers the state as of its last successful sync, so a
+merge can tell a genuine conflict — both sides changed the same item since
+that point — from an ordinary one-sided edit. Last-write-wins still decides,
+but the replaced version is surfaced on the Today tab with both versions shown
+and a one-click restore, so an edit made offline never disappears silently.
+That bookkeeping is per-device and never leaves the browser.
+
 ## Backups
 
 Everything lives on one volume, so a volume loss is the only unrecoverable

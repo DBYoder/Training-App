@@ -1158,3 +1158,28 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   margin: 4px 0 12px;
 }
 .verify-ok { color: var(--neon-lime); }
+
+/* ---------- sync conflicts ---------- */
+
+.conflict-card {
+  background: var(--bg-card);
+  border: 1px solid var(--neon-yellow);
+  box-shadow: 0 0 8px rgba(255, 238, 0, 0.18);
+  padding: 14px 20px;
+  margin: 0 0 16px;
+}
+.conflict-card summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.conflict-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--neon-yellow);
+}
+.conflict-loser { color: var(--neon-yellow); }

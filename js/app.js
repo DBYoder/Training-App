@@ -409,6 +409,7 @@ async function handleAuthSubmit(ev) {
       offline = false;
       localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
       state = loadCache() || emptyState();
+  syncMeta = loadSyncMeta();
       await afterSignIn();
       return;
     }
@@ -425,6 +426,7 @@ async function handleAuthSubmit(ev) {
     offline = false;
     localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
     state = loadCache() || emptyState();
+  syncMeta = loadSyncMeta();
     await afterSignIn();
   } catch {
     errEl.textContent = "Can't reach the server — check your connection.";
@@ -438,6 +440,7 @@ async function logout() {
   try { await authRequest("/api/logout"); } catch { /* best effort */ }
   user = null;
   localStorage.removeItem(LAST_USER_KEY);
+  syncMeta = { base: null, conflicts: [] };
   authMode = "login";
   render();
 }
@@ -445,6 +448,43 @@ async function logout() {
 /* ---------- sync ---------- */
 
 let syncStatus = { error: null, lastSync: null };
+
+/* Per-device, never synced: the state as of the last successful sync (used to
+ * tell a real conflict from a one-sided change) plus any conflicts found. */
+let syncMeta = { base: null, conflicts: [] };
+const MAX_CONFLICTS = 50;
+
+function syncMetaKey() {
+  return `${cacheKey()}.sync`;
+}
+
+function loadSyncMeta() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(syncMetaKey()));
+    if (parsed && typeof parsed === "object") {
+      return { base: parsed.base || null, conflicts: parsed.conflicts || [] };
+    }
+  } catch { /* fall through */ }
+  return { base: null, conflicts: [] };
+}
+
+function saveSyncMeta() {
+  try {
+    localStorage.setItem(syncMetaKey(), JSON.stringify(syncMeta));
+  } catch { /* quota: conflicts are advisory, never block a sync */ }
+}
+
+/* Only updatedAt is kept — enough to tell which side moved, and tiny. */
+function snapshotBase(st) {
+  const stamps = (map) => Object.fromEntries(
+    Object.entries(map || {}).map(([k, v]) => [k, v && v.updatedAt]));
+  return {
+    plans: stamps(st.plans),
+    schedules: stamps(st.schedules),
+    journal: Object.fromEntries(
+      Object.entries(st.journal || {}).map(([sid, j]) => [sid, stamps(j)])),
+  };
+}
 let syncInProgress = false;
 let syncTimer = null;
 let pushPending = false;
@@ -453,20 +493,39 @@ function ts(v) {
   return v ? Date.parse(v) || 0 : 0;
 }
 
-function mergeById(localMap = {}, remoteMap = {}) {
+/* Last-write-wins is fine when only one side moved. When BOTH sides changed
+ * since the last successful sync, the loser is a real edit that would vanish
+ * silently — so record it and let the user decide. Knowing what "changed"
+ * means requires remembering the state at the last sync (the base). */
+function mergeById(localMap = {}, remoteMap = {}, baseMap = null, onConflict = null) {
   const out = {};
   for (const k of new Set([...Object.keys(localMap), ...Object.keys(remoteMap)])) {
     const a = localMap[k];
     const b = remoteMap[k];
-    out[k] = ts(b && b.updatedAt) > ts(a && a.updatedAt) ? b : (a ?? b);
+    const at = ts(a && a.updatedAt);
+    const bt = ts(b && b.updatedAt);
+    if (onConflict && baseMap && a && b && a.updatedAt !== b.updatedAt) {
+      const base = baseMap[k];
+      // a side that still matches the base simply didn't change
+      if (a.updatedAt !== base && b.updatedAt !== base) {
+        onConflict(k, bt > at ? b : a, bt > at ? a : b);
+      }
+    }
+    out[k] = bt > at ? b : (a ?? b);
   }
   return out;
 }
 
-function mergeStates(local, remote) {
+function mergeStates(local, remote, base = null, found = null) {
+  const record = found
+    ? (kind, extra) => (k, winner, loser) => found({ kind, id: k, winner, loser, ...extra })
+    : () => null;
+  // A missing entry in the base is meaningful — it means "didn't exist at the
+  // last sync" — so only a null base (never synced) disables detection.
+  const baseOf = (key) => (base ? base[key] || {} : null);
   const merged = {
-    plans: mergeById(local.plans, remote.plans),
-    schedules: mergeById(local.schedules, remote.schedules),
+    plans: mergeById(local.plans, remote.plans, baseOf("plans"), record("plan")),
+    schedules: mergeById(local.schedules, remote.schedules, baseOf("schedules"), record("schedule")),
     journal: {},
     activeScheduleId: local.activeScheduleId,
     activeUpdatedAt: local.activeUpdatedAt,
@@ -476,7 +535,10 @@ function mergeStates(local, remote) {
     ...Object.keys(remote.journal || {}),
   ]);
   for (const sid of schedIds) {
-    merged.journal[sid] = mergeById((local.journal || {})[sid], (remote.journal || {})[sid]);
+    merged.journal[sid] = mergeById(
+      (local.journal || {})[sid], (remote.journal || {})[sid],
+      base ? ((base.journal || {})[sid] || {}) : null,
+      record("journal", { schedId: sid }));
   }
   if (ts(remote.activeUpdatedAt) > ts(local.activeUpdatedAt)) {
     merged.activeScheduleId = remote.activeScheduleId;
@@ -497,7 +559,15 @@ async function doSync() {
     if (!getRes.ok) throw new Error(`server error (${getRes.status})`);
     const remote = await getRes.json();
     if (remote && remote.state) {
-      state = mergeStates(state, remote.state);
+      const found = [];
+      state = mergeStates(state, remote.state, syncMeta.base, (c) => found.push(c));
+      if (found.length) {
+        const at = new Date().toISOString();
+        syncMeta.conflicts = [
+          ...found.map((c) => ({ ...c, detectedAt: at })),
+          ...syncMeta.conflicts,
+        ].slice(0, MAX_CONFLICTS);
+      }
       saveState(false);
     }
     materializeLegacySwapPlan();
@@ -509,6 +579,9 @@ async function doSync() {
     if (putRes.status === 401) throw { loggedOut: true };
     if (!putRes.ok) throw new Error(`server error (${putRes.status})`);
     syncStatus = { error: null, lastSync: new Date().toISOString() };
+    // server and client now agree: this is the base the next merge compares to
+    syncMeta.base = snapshotBase(state);
+    saveSyncMeta();
     pushPending = false;
     offline = false;
   } catch (e) {
@@ -970,6 +1043,93 @@ function renderOnboarding(el, message) {
   });
 }
 
+/* ----- sync conflicts ----- */
+
+function conflictSummary(entry) {
+  if (!entry) return "nothing";
+  if (entry.deleted) return "deleted";
+  const bits = [];
+  if (entry.status) bits.push(entry.status);
+  if (entry.distance) bits.push(`${entry.distance} mi`);
+  if (entry.duration) bits.push(entry.duration);
+  if (entry.rpe) bits.push(`RPE ${entry.rpe}`);
+  if (entry.notes) bits.push(`“${entry.notes.slice(0, 60)}${entry.notes.length > 60 ? "…" : ""}”`);
+  return bits.join(" · ") || "an empty entry";
+}
+
+/* What the conflict is about, in the user's terms. */
+function conflictLabel(c) {
+  if (c.kind === "journal") {
+    const sched = state.schedules[c.schedId];
+    const info = sched && !sched.deleted ? schedInfo(sched) : null;
+    const idx = Number(c.id);
+    if (info && Number.isFinite(idx) && info.days[idx]) {
+      return `${FMT_MED.format(addDays(info.start, idx))} — ${plainPlanName(info.days[idx].title)}`;
+    }
+    return `Day ${Number.isFinite(idx) ? idx + 1 : "?"}`;
+  }
+  if (c.kind === "plan") return `Plan: ${plainPlanName(c.winner?.name || "")}`;
+  return `Schedule: ${esc(c.winner?.name || "")}`;
+}
+
+function conflictsHTML() {
+  const list = syncMeta.conflicts;
+  if (!list.length) return "";
+  return `
+    <details class="conflict-card" id="conflict-card">
+      <summary>
+        <span class="conflict-count">⚠ ${list.length} edit${list.length === 1 ? "" : "s"} replaced by another device</span>
+        <span class="hint">review</span>
+      </summary>
+      <p class="hint">When two devices change the same thing while offline, the most recent
+      edit wins. These are the ones that were replaced — restore any you'd rather keep.</p>
+      <ul class="plan-list">
+        ${list.map((c, i) => `
+          <li class="plan-row">
+            <div class="plan-row-main">
+              <strong>${esc(conflictLabel(c))}</strong>
+              <span class="hint">kept: ${esc(conflictSummary(c.winner))}</span>
+              <span class="hint conflict-loser">replaced: ${esc(conflictSummary(c.loser))}</span>
+            </div>
+            <div class="plan-row-actions">
+              <button class="btn restore-conflict" data-idx="${i}">Restore replaced</button>
+              <button class="btn dismiss-conflict" data-idx="${i}">Dismiss</button>
+            </div>
+          </li>`).join("")}
+      </ul>
+      <button id="dismiss-all-conflicts" class="btn">Dismiss all</button>
+    </details>`;
+}
+
+function wireConflicts(el) {
+  if (!syncMeta.conflicts.length) return;
+  const drop = (idx) => {
+    syncMeta.conflicts.splice(idx, 1);
+    saveSyncMeta();
+    render();
+  };
+  $$(".dismiss-conflict", el).forEach((b) =>
+    b.addEventListener("click", () => drop(Number(b.dataset.idx))));
+  $("#dismiss-all-conflicts", el).addEventListener("click", () => {
+    syncMeta.conflicts = [];
+    saveSyncMeta();
+    render();
+  });
+  $$(".restore-conflict", el).forEach((b) => {
+    b.addEventListener("click", () => {
+      const c = syncMeta.conflicts[Number(b.dataset.idx)];
+      if (!c || !c.loser) return;
+      // a fresh timestamp so the restored version wins the next merge
+      const restored = { ...c.loser, updatedAt: new Date().toISOString() };
+      if (c.kind === "journal") (state.journal[c.schedId] ||= {})[c.id] = restored;
+      else if (c.kind === "plan") state.plans[c.id] = restored;
+      else state.schedules[c.id] = restored;
+      saveState();
+      drop(Number(b.dataset.idx));
+    });
+  });
+}
+
 /* ----- Today tab ----- */
 
 function statusBadge(entry) {
@@ -1021,14 +1181,17 @@ function renderToday() {
   const ti = info.todayIdx;
   if (ti < 0) {
     el.innerHTML = `
+      ${conflictsHTML()}
       <div class="notice">
         <h2>Training starts ${FMT_LONG.format(info.start)}</h2>
         <p>That's <strong>${-ti} day${ti === -1 ? "" : "s"}</strong> from now
         (${esc(info.sched.name)}). Here's Day 1 so you know what's coming:</p>
       </div>
       ${dayCard(info, 0, { heading: "First day of the plan" })}`;
+    wireConflicts(el);
   } else if (ti >= info.len) {
     el.innerHTML = `
+      ${conflictsHTML()}
       <div class="notice">
         <h2>Plan complete</h2>
         <p><strong>${esc(info.sched.name)}</strong> ended ${FMT_LONG.format(info.end)}.
@@ -1036,9 +1199,11 @@ function renderToday() {
         next block from Settings → New schedule.</p>
       </div>
       ${dayCard(info, info.len - 1, { heading: "Final day" })}`;
+    wireConflicts(el);
   } else {
     const isRaceDay = info.days[ti].type === "race";
-    const parts = [dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
+    const parts = [conflictsHTML(),
+      dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
     if (!state.profile) {
       parts.push(`<p class="hint pace-tip">tip: add a recent race result in
         <a href="#" class="goto-pace-settings">Settings → pace zones</a> to see your
@@ -1052,6 +1217,7 @@ function renderToday() {
       parts.push(`<h2 class="section-label">Up next</h2>`, dayCard(info, ti + 1));
     }
     el.innerHTML = parts.join("");
+    wireConflicts(el);
     const tip = $(".goto-pace-settings", el);
     if (tip) {
       tip.addEventListener("click", (ev) => {
@@ -2106,6 +2272,7 @@ function renderSettings() {
       // nothing left to sync; drop every local trace of this account
       clearTimeout(syncTimer);
       pushPending = false;
+      localStorage.removeItem(syncMetaKey());
       localStorage.removeItem(cacheKey());
       localStorage.removeItem(LAST_USER_KEY);
       user = null;
@@ -2698,6 +2865,7 @@ async function boot() {
     verifyNotice = "Email confirmed ✓";
   }
   state = loadCache() || emptyState();
+  syncMeta = loadSyncMeta();
   migrateLegacyState();
   materializeLegacySwapPlan();
   const autoSetup = !liveSchedules().length;
