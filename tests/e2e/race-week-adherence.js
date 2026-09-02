@@ -7,6 +7,10 @@ const L = require("./lib.js");
 /* Seed a schedule's journal straight through the API so a realistic history
  * exists without driving the UI 60 times. */
 async function seedJournal(page, fill) {
+  // Flush anything the app is holding first: on reload it fires its
+  // pagehide keepalive push, which would otherwise overwrite this seed with
+  // the in-memory state (that push working is a feature, not a bug).
+  await L.forceSync(page);
   await page.evaluate(async (fillSrc) => {
     const decide = new Function("return " + fillSrc)();
     const { state } = await (await fetch("/api/data")).json();
@@ -104,19 +108,73 @@ async function seedJournal(page, fill) {
       realistic.includes("your goal time") && realistic.includes("3:15:00"),
       realistic.replace(/\s+/g, " ").slice(0, 160));
 
-    /* ---------- the checklist ticks and persists ---------- */
-    await page.check('#race-week .race-check[data-item="kit"]');
-    await page.waitForTimeout(150);
-    L.check("a ticked item is struck through",
+    /* ---------- the checklist is the runner's own ---------- */
+    const items = () => page.locator("#race-checklist li");
+    const seeded = await items().count();
+    L.check("a starter checklist is seeded so it's useful immediately", seeded > 0, `${seeded} items`);
+
+    await page.fill("#checklist-new", "Drop bag at gear check by 6:30");
+    await page.click("#checklist-add");
+    await page.waitForFunction((n) =>
+      document.querySelectorAll("#race-checklist li").length === n + 1, seeded);
+    L.check("a runner can add their own item",
+      (await page.textContent("#race-checklist")).includes("Drop bag at gear check"));
+
+    // Enter adds too, without submitting anything else
+    await page.fill("#checklist-new", "Text Sam the tracking link");
+    await page.press("#checklist-new", "Enter");
+    await page.waitForFunction((n) =>
+      document.querySelectorAll("#race-checklist li").length === n + 2, seeded);
+    L.check("Enter adds an item as well",
+      (await page.textContent("#race-checklist")).includes("Text Sam"));
+
+    // every seeded item can be removed — nothing is fixed
+    for (let i = 0; i < seeded; i++) {
+      await page.locator("#race-checklist .checklist-remove").first().click();
+      await page.waitForTimeout(60);
+    }
+    const remaining = await items().allTextContents();
+    L.check("every predefined item can be deleted",
+      remaining.length === 2 &&
+      remaining.every((t) => /Drop bag|Text Sam/.test(t)),
+      remaining.join(" | "));
+
+    await page.check('#race-checklist input[type="checkbox"]');
+    await page.waitForTimeout(120);
+    L.check("ticking a custom item strikes it through",
       await page.evaluate(() =>
-        document.querySelector('.race-check[data-item="kit"]').closest("li").classList.contains("done")));
+        document.querySelector("#race-checklist li").classList.contains("done")));
+
     await L.forceSync(page);
     await page.reload();
     await page.waitForSelector("#race-week");
-    L.check("ticks survive a reload",
-      await page.isChecked('#race-week .race-check[data-item="kit"]'));
-    L.check("other items stay unticked",
-      !(await page.isChecked('#race-week .race-check[data-item="fuel"]')));
+    const afterReload = await page.textContent("#race-checklist");
+    L.check("the custom list survives a reload",
+      afterReload.includes("Drop bag at gear check") &&
+      afterReload.includes("Text Sam") &&
+      !afterReload.includes("Lay out kit"),
+      afterReload.replace(/\s+/g, " ").slice(0, 160));
+    L.check("the tick survives too",
+      await page.isChecked('#race-checklist input[type="checkbox"]'));
+
+    // and it reaches another device
+    const ctx2 = await browser.newContext();
+    const other = await ctx2.newPage();
+    errors.push(...L.trackErrors(other, "other"));
+    await L.login(other, server.base, "raceweek@example.com");
+    await other.waitForSelector("#race-checklist");
+    L.check("the checklist syncs to another device",
+      (await other.textContent("#race-checklist")).includes("Drop bag at gear check"));
+
+    // a custom item is escaped, never rendered as markup
+    await page.fill("#checklist-new", "<img src=x onerror=window.__pwn=1>bring tape");
+    await page.click("#checklist-add");
+    await page.waitForFunction(() =>
+      document.querySelector("#race-checklist").textContent.includes("bring tape"));
+    L.check("checklist text is escaped, not rendered",
+      (await page.evaluate(() =>
+        document.querySelector("#race-checklist").querySelectorAll("img").length)) === 0 &&
+      (await page.evaluate(() => window.__pwn)) === undefined);
 
     /* ---------- adherence & streak ---------- */
     // every scheduled run done except one skipped day early on

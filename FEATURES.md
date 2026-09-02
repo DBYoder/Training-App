@@ -48,7 +48,7 @@ between this being your training app and being your group's training app.
 
 | # | Item | Why | Effort |
 |---|------|-----|--------|
-| 9 | ~~**Race-week checklist**~~ | ✅ **Done.** In the last 7 days the Today tab leads with goal-pace splits (5K→finish) from the runner's own VDOT, the plan's own fuelling numbers plus the total they imply for the predicted finish, and a checklist that ticks and syncs. An over-ambitious goal is flagged and never drives the splits. | M |
+| 9 | ~~**Race-week checklist**~~ | ✅ **Done.** In the last 7 days the Today tab leads with goal-pace splits (5K→finish) from the runner's own VDOT, the plan's own fuelling numbers plus the total they imply for the predicted finish, and a checklist the runner writes themselves — starter items are seeded for convenience but every one can be deleted, and their own items added. An over-ambitious goal is flagged and never drives the splits. | M |
 | 10 | ~~**Adherence / streak view**~~ | ✅ **Done.** Progress gains plan-adherence % (completed ÷ scheduled runs elapsed, rest days excluded) and a current/best day streak where rest days carry the streak and an unlogged today never breaks it. | S |
 | 11 | **Full Strava integration** | Gated on you registering a Strava API app, and on their athlete-capacity review before partners can connect. GPX import covers the case today. | L |
 | 12 | **Accessibility beyond contrast** | Contrast and sizing are done; keyboard focus order, visible focus rings, screen-reader labels and `prefers-reduced-motion` (the design leans on glow and transitions) are not. | M |

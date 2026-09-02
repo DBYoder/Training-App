@@ -52,7 +52,9 @@ went to track your progress.
 - **Race week** — inside the final seven days the Today tab leads with
   goal-pace splits (5K through the finish) computed from your own race
   result, the fuelling numbers your plan actually specifies plus the total
-  they add up to over your predicted finish, and a checklist that syncs. A
+  they add up to over your predicted finish, and **your own race-day
+  checklist** — a few starter items are seeded, but every one can be deleted
+  and you add whatever matters to you; it syncs and is kept per schedule. A
   goal ahead of your current fitness is flagged rather than quietly used.
 - **Cross-device sync** — changes push automatically and merge by
   most-recent-edit per journal entry (deletions propagate too), with offline

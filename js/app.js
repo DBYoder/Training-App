@@ -1097,24 +1097,48 @@ function racePlan() {
   };
 }
 
-const RACE_CHECKLIST = [
-  ["pace", "Know your opening pace — go out no faster than target"],
-  ["fuel", "Carry the gels/drink the plan calls for, and practise nothing new"],
-  ["kit", "Lay out kit, shoes and bib the night before"],
-  ["watch", "Charge the watch; set it to the fields you actually use"],
-  ["logistics", "Confirm start time, travel and bag drop"],
-  ["sleep", "Bank sleep earlier in the week — race-eve sleep matters least"],
+/* Starter items only — every runner's race morning is different, so these are
+ * seeded once and then fully theirs to edit, delete or replace. */
+const RACE_CHECKLIST_SEED = [
+  "Know your opening pace — go out no faster than target",
+  "Carry the gels/drink the plan calls for, and practise nothing new",
+  "Lay out kit, shoes and bib the night before",
+  "Charge the watch; set it to the fields you actually use",
+  "Confirm start time, travel and bag drop",
 ];
+const MAX_CHECKLIST_ITEMS = 40;
+const MAX_CHECKLIST_TEXT = 140;
 
-function checklistFor(schedId) {
-  const rec = state.checklists && state.checklists[schedId];
-  return (rec && rec.items) || {};
+function newChecklistItem(text, done = false) {
+  return { id: crypto.randomUUID(), text: String(text).slice(0, MAX_CHECKLIST_TEXT), done };
 }
 
-function toggleChecklist(schedId, itemId, on) {
+/* Returns the runner's list, seeding it the first time and migrating the
+ * original fixed-item format ({id: bool}) to editable items. */
+function checklistFor(schedId, { seed = false } = {}) {
+  const rec = state.checklists && state.checklists[schedId];
+  if (rec && Array.isArray(rec.items)) return rec.items;
+  if (rec && rec.items && typeof rec.items === "object") {
+    // migrate ticks recorded against the old hardcoded ids
+    const ticked = rec.items;
+    const legacyOrder = ["pace", "fuel", "kit", "watch", "logistics", "sleep"];
+    const migrated = RACE_CHECKLIST_SEED.map((text, i) =>
+      newChecklistItem(text, Boolean(ticked[legacyOrder[i]])));
+    saveChecklist(schedId, migrated);
+    return migrated;
+  }
+  if (!seed) return [];
+  const seeded = RACE_CHECKLIST_SEED.map((t) => newChecklistItem(t));
+  saveChecklist(schedId, seeded);
+  return seeded;
+}
+
+function saveChecklist(schedId, items) {
   state.checklists ||= {};
-  const items = { ...checklistFor(schedId), [itemId]: on };
-  state.checklists[schedId] = { items, updatedAt: new Date().toISOString() };
+  state.checklists[schedId] = {
+    items: items.slice(0, MAX_CHECKLIST_ITEMS),
+    updatedAt: new Date().toISOString(),
+  };
   saveState();
 }
 
@@ -1126,7 +1150,7 @@ function raceWeekHTML(info) {
 
   const fuel = raceFuelling(info.days[raceIdx]);
   const plan = racePlan();
-  const ticked = checklistFor(info.sched.id);
+  const items = checklistFor(info.sched.id, { seed: true });
   const when = daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
 
   const splitRows = plan ? `
@@ -1156,25 +1180,72 @@ function raceWeekHTML(info) {
       <summary><span class="race-week-title">🏁 Race week — ${when}</span></summary>
       ${splitRows}
       ${fuelLine}
-      <ul class="checklist">
-        ${RACE_CHECKLIST.map(([id, label]) => `
-          <li>
+      <h3 class="checklist-title">// my checklist</h3>
+      <ul class="checklist" id="race-checklist">
+        ${items.map((item) => `
+          <li class="${item.done ? "done" : ""}" data-id="${item.id}">
             <label>
-              <input type="checkbox" class="race-check" data-item="${id}" ${ticked[id] ? "checked" : ""}>
-              <span>${esc(label)}</span>
+              <input type="checkbox" class="race-check" data-id="${item.id}" ${item.done ? "checked" : ""}>
+              <span>${esc(item.text)}</span>
             </label>
+            <button type="button" class="checklist-remove" data-id="${item.id}"
+                    aria-label="Remove this item" title="Remove">✕</button>
           </li>`).join("")}
       </ul>
+      ${items.length ? "" : '<p class="hint">Your checklist is empty — add what matters to you.</p>'}
+      <div class="inline-controls checklist-add">
+        <input type="text" id="checklist-new" maxlength="${MAX_CHECKLIST_TEXT}"
+               placeholder="add your own — e.g. drop bag at gear check">
+        <button type="button" id="checklist-add" class="btn">Add</button>
+      </div>
+      <p class="hint">These are yours: edit the list however you like. It syncs
+      with your account and is kept per schedule.</p>
     </details>`;
 }
 
 function wireRaceWeek(el, info) {
-  $$(".race-check", el).forEach((box) => {
+  const card = $("#race-week", el);
+  if (!card) return;
+  const schedId = info.sched.id;
+  const items = () => checklistFor(schedId);
+
+  $$(".race-check", card).forEach((box) => {
     box.addEventListener("change", () => {
-      toggleChecklist(info.sched.id, box.dataset.item, box.checked);
+      const next = items().map((it) =>
+        it.id === box.dataset.id ? { ...it, done: box.checked } : it);
+      saveChecklist(schedId, next);
       box.closest("li").classList.toggle("done", box.checked);
     });
-    box.closest("li").classList.toggle("done", box.checked);
+  });
+
+  $$(".checklist-remove", card).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      saveChecklist(schedId, items().filter((it) => it.id !== btn.dataset.id));
+      render();
+    });
+  });
+
+  const input = $("#checklist-new", card);
+  const addItem = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    const current = items();
+    if (current.length >= MAX_CHECKLIST_ITEMS) {
+      input.value = "";
+      return;
+    }
+    saveChecklist(schedId, [...current, newChecklistItem(text)]);
+    render();
+    // keep typing: the list re-rendered, so grab the fresh input
+    const next = $("#checklist-new");
+    if (next) next.focus();
+  };
+  $("#checklist-add", card).addEventListener("click", addItem);
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      addItem();
+    }
   });
 }
 
