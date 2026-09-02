@@ -386,6 +386,7 @@ const AUTH_ERRORS = {
   email_taken: "There's already an account with that email — try signing in.",
   invalid_credentials: "Wrong email or password.",
   too_many_attempts: "Too many attempts — wait a few minutes and try again.",
+  invalid_or_expired_token: "That link has expired or was already used — request a new one.",
 };
 
 async function handleAuthSubmit(ev) {
@@ -396,6 +397,29 @@ async function handleAuthSubmit(ev) {
   const submit = $("#auth-submit");
   submit.disabled = true;
   try {
+    if (authMode === "forgot") {
+      await authRequest("/api/forgot", { email: form.email.value });
+      // deliberately the same answer either way: never reveal who has an account
+      setAuthMode("login",
+        "If that address has an account, a reset link is on its way. It expires in an hour.");
+      return;
+    }
+    if (authMode === "reset") {
+      const { ok, data } = await authRequest("/api/reset",
+        { token: pendingResetToken, password: form.password.value });
+      if (!ok) {
+        errEl.textContent = AUTH_ERRORS[data.error] || "That link is invalid or has expired.";
+        errEl.hidden = false;
+        return;
+      }
+      pendingResetToken = null;
+      user = data.user;
+      offline = false;
+      localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
+      state = loadCache() || emptyState();
+      await afterSignIn();
+      return;
+    }
     const { ok, data } = await authRequest(
       authMode === "login" ? "/api/login" : "/api/register",
       { email: form.email.value, password: form.password.value }
@@ -409,17 +433,7 @@ async function handleAuthSubmit(ev) {
     offline = false;
     localStorage.setItem(LAST_USER_KEY, JSON.stringify(user));
     state = loadCache() || emptyState();
-    migrateLegacyState();
-    materializeLegacySwapPlan();
-    // first-time users (no schedules) go straight to setup in Settings;
-    // re-evaluate after sync in case another device already created one
-    const autoSetup = !liveSchedules().length;
-    activeTab = autoSetup ? "settings" : "today";
-    render();
-    await doSync();
-    if (!liveSchedules().length) activeTab = "settings";
-    else if (autoSetup && activeTab === "settings") activeTab = "today";
-    render();
+    await afterSignIn();
   } catch {
     errEl.textContent = "Can't reach the server — check your connection.";
     errEl.hidden = false;
@@ -585,13 +599,60 @@ function render() {
   if (activeTab === "settings") renderSettings();
 }
 
+let pendingResetToken = null;
+let verifyNotice = null;   // transient "email confirmed" message
+
+/* Shared by sign-in, registration and a completed password reset. */
+async function afterSignIn() {
+  migrateLegacyState();
+  materializeLegacySwapPlan();
+  // first-time users (no schedules) go straight to setup in Settings;
+  // re-evaluate after sync in case another device already created one
+  const autoSetup = !liveSchedules().length;
+  activeTab = autoSetup ? "settings" : "today";
+  render();
+  await doSync();
+  if (!liveSchedules().length) activeTab = "settings";
+  else if (autoSetup && activeTab === "settings") activeTab = "today";
+  render();
+}
+
+const AUTH_COPY = {
+  login:    { title: "Sign in",             submit: "Sign in" },
+  register: { title: "Create your account", submit: "Create account" },
+  forgot:   { title: "Reset your password", submit: "Email me a link" },
+  reset:    { title: "Choose a new password", submit: "Set password" },
+};
+
 function renderAuth() {
+  const copy = AUTH_COPY[authMode] || AUTH_COPY.login;
+  const form = $("#auth-form");
+  $("#auth-title").textContent = copy.title;
+  $("#auth-submit").textContent = copy.submit;
+
+  // forgot needs only an email; reset needs only a password
+  form.email.closest("label").hidden = authMode === "reset";
+  form.email.required = authMode !== "reset";
+  form.password.closest("label").hidden = authMode === "forgot";
+  form.password.required = authMode !== "forgot";
+  form.password.autocomplete = authMode === "login" ? "current-password" : "new-password";
+  form.password.placeholder = authMode === "reset"
+    ? "new password, at least 8 characters" : "at least 8 characters";
+
   const isLogin = authMode === "login";
-  $("#auth-title").textContent = isLogin ? "Sign in" : "Create your account";
-  $("#auth-submit").textContent = isLogin ? "Sign in" : "Create account";
-  $("#auth-switch-label").textContent = isLogin ? "New here?" : "Already have an account?";
+  $("#auth-switch-label").textContent = isLogin ? "New here?"
+    : authMode === "register" ? "Already have an account?" : "Remembered it?";
   $("#auth-switch-link").textContent = isLogin ? "Create an account" : "Sign in";
-  $("#auth-form").password.autocomplete = isLogin ? "current-password" : "new-password";
+  $("#auth-forgot-wrap").hidden = !isLogin;
+}
+
+function setAuthMode(mode, notice) {
+  authMode = mode;
+  $("#auth-error").hidden = true;
+  const noticeEl = $("#auth-notice");
+  noticeEl.hidden = !notice;
+  if (notice) noticeEl.textContent = notice;
+  renderAuth();
 }
 
 function renderCountdownChip() {
@@ -1572,6 +1633,7 @@ function renderPlans() {
             recipient_not_found: "No account with that email — they need to sign up first.",
             cannot_share_with_self: "That's you — share it with someone else.",
             inbox_full: "Their share inbox is full.",
+            recipient_unverified: "That account hasn't confirmed its email address yet.",
             invalid_email: "That doesn't look like an email address.",
             too_many_attempts: "Too many shares — wait a few minutes.",
           }[data.error] || "Couldn't send — try again.";
@@ -1851,14 +1913,23 @@ function renderSettings() {
     : (syncStatus.lastSync ? `Synced ${new Date(syncStatus.lastSync).toLocaleString()}` : "Not synced yet this session");
 
   const firstRun = !scheds.length;
+  const unverified = user.verificationRequired && user.emailVerified === false;
+  const verifyLine = verifyNotice
+    ? `<p class="hint verify-ok" id="verify-line">${esc(verifyNotice)}</p>`
+    : unverified
+      ? `<p class="hint sync-error" id="verify-line">Your email isn't confirmed yet, so
+          training partners can't share plans with you. Check your inbox for the link.</p>`
+      : "";
   const accountCard = `
     <div class="settings-card">
       <h2>Account</h2>
       <p>Signed in as <strong>${esc(user.email)}</strong>. Your plans, schedules, and
       journals are stored in your account — sign in anywhere to get them.</p>
+      ${verifyLine}
       <p class="hint" id="account-sync-status">${syncLine}</p>
       <div class="inline-controls">
         <button id="sync-now" class="btn">Sync now</button>
+        ${unverified ? '<button id="resend-verify" class="btn">Resend confirmation</button>' : ""}
         <button id="logout" class="btn">Log out</button>
       </div>
     </div>`;
@@ -1904,6 +1975,24 @@ function renderSettings() {
     render();
   });
   $("#logout").addEventListener("click", logout);
+  const resend = $("#resend-verify");
+  if (resend) {
+    resend.addEventListener("click", async () => {
+      const line = $("#verify-line");
+      resend.disabled = true;
+      try {
+        const res = await fetch("/api/verify/resend", { method: "POST" });
+        line.textContent = res.ok
+          ? "Confirmation link sent — check your inbox."
+          : "Couldn't send it just now; try again in a minute.";
+        line.classList.toggle("sync-error", !res.ok);
+      } catch {
+        line.textContent = "Can't reach the server.";
+      } finally {
+        resend.disabled = false;
+      }
+    });
+  }
 
   $$(".activate-sched", el).forEach((b) => {
     b.addEventListener("click", () => {
@@ -2466,7 +2555,38 @@ function closeModal() {
 
 /* ---------- boot & wiring ---------- */
 
+/* Links arrive as /?reset=<token> or /?verify=<token>. Consume the token and
+ * strip it from the URL so it never lingers in history or a shared screenshot. */
+async function consumeEmailLink() {
+  const params = new URLSearchParams(location.search);
+  const reset = params.get("reset");
+  const verify = params.get("verify");
+  if (!reset && !verify) return null;
+  history.replaceState(null, "", location.pathname);
+  if (reset) {
+    pendingResetToken = reset;
+    return { mode: "reset" };
+  }
+  try {
+    const res = await fetch("/api/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: verify }),
+    });
+    return { verified: res.ok };
+  } catch {
+    return { verified: false };
+  }
+}
+
 async function boot() {
+  const link = await consumeEmailLink();
+  if (link && link.mode === "reset") {
+    user = null;
+    setAuthMode("reset");
+    render();
+    return; // the reset form is the whole screen until it succeeds
+  }
   try {
     const res = await fetch("/api/me");
     if (res.ok) {
@@ -2486,7 +2606,16 @@ async function boot() {
   }
   if (!user) {
     render();
+    if (link && link.verified !== undefined) {
+      setAuthMode("login", link.verified
+        ? "Email confirmed — sign in to continue."
+        : "That confirmation link has expired or was already used.");
+    }
     return;
+  }
+  if (link && link.verified) {
+    user = { ...user, emailVerified: true };
+    verifyNotice = "Email confirmed ✓";
   }
   state = loadCache() || emptyState();
   migrateLegacyState();
@@ -2506,9 +2635,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#auth-form").addEventListener("submit", handleAuthSubmit);
   $("#auth-switch-link").addEventListener("click", (ev) => {
     ev.preventDefault();
-    authMode = authMode === "login" ? "register" : "login";
-    $("#auth-error").hidden = true;
-    renderAuth();
+    setAuthMode(authMode === "login" ? "register" : "login");
+  });
+  $("#auth-forgot-link").addEventListener("click", (ev) => {
+    ev.preventDefault();
+    setAuthMode("forgot");
   });
 
   $$("#tabs button").forEach((b) => {

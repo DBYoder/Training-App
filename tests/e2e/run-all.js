@@ -13,6 +13,7 @@ const path = require("path");
 
 const SUITES = [
   ["accounts-and-sharing.js", 4601],
+  ["auth-recovery.js", 4605],
   ["scheduling.js", 4602],
   ["second-session.js", 4603],
   ["mobile-a11y.js", 4604],

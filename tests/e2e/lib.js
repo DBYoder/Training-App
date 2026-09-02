@@ -127,6 +127,10 @@ async function forceSync(page) {
 
 /** Tiny assertion helper that reports which suite step failed. */
 function check(label, condition, detail = "") {
+  // a missing condition silently fails every time — catch the mistake loudly
+  if (arguments.length < 2) {
+    throw new Error(`check("${label}") was called without a condition`);
+  }
   if (!condition) throw new Error(`${label}${detail ? " — " + detail : ""}`);
   console.log("  ✓", label);
 }

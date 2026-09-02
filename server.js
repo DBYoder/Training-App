@@ -15,6 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const backup = require("./backup.js");
+const mailer = require("./mailer.js");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
@@ -32,6 +33,18 @@ const inboxFile = (id) => path.join(DATA_DIR, "inbox", `${id}.json`);
 
 const MAX_SHARE_BYTES = 1024 * 1024;
 const MAX_INBOX_ITEMS = 50;
+
+const TOKENS_FILE = path.join(DATA_DIR, "tokens.json");
+const RESET_TTL_MS = 60 * 60 * 1000;         // 1 hour
+const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;   // 1 day
+
+/* Email verification is only enforced when mail can actually reach people;
+ * otherwise nobody could ever verify and sharing would break. */
+function verificationRequired() {
+  const explicit = process.env.REQUIRE_EMAIL_VERIFICATION;
+  if (explicit !== undefined) return explicit === "true";
+  return mailer.isConfigured();
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -120,6 +133,65 @@ function sessionCookie(req, token, maxAgeSeconds) {
   return `session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`;
 }
 
+/* ---------- one-time tokens (password reset, email verification) ----------
+ * Only the SHA-256 of a token is stored, so a leaked tokens.json can't be
+ * used to reset anyone's password. Tokens are single-use and expire. */
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function readTokens() {
+  const all = readJson(TOKENS_FILE, {});
+  const now = Date.now();
+  let changed = false;
+  for (const [k, v] of Object.entries(all)) {
+    if (!v || v.expiresAt < now) { delete all[k]; changed = true; }
+  }
+  if (changed) { try { writeJson(TOKENS_FILE, all); } catch { /* best effort */ } }
+  return all;
+}
+
+function issueToken(kind, userId, ttlMs) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const all = readTokens();
+  // one live token per kind per user, so an old link stops working
+  for (const [k, v] of Object.entries(all)) {
+    if (v.userId === userId && v.kind === kind) delete all[k];
+  }
+  all[hashToken(token)] = { kind, userId, expiresAt: Date.now() + ttlMs };
+  writeJson(TOKENS_FILE, all);
+  return token;
+}
+
+function consumeToken(kind, token) {
+  if (typeof token !== "string" || token.length < 32) return null;
+  const all = readTokens();
+  const key = hashToken(token);
+  const rec = all[key];
+  if (!rec || rec.kind !== kind || rec.expiresAt < Date.now()) return null;
+  delete all[key];
+  writeJson(TOKENS_FILE, all);
+  return rec.userId;
+}
+
+function appUrl(req) {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, "");
+  const proto = req.headers["x-forwarded-proto"] || "http";
+  return `${proto}://${req.headers.host}`;
+}
+
+async function sendVerificationEmail(req, user) {
+  const token = issueToken("verify", user.id, VERIFY_TTL_MS);
+  const link = `${appUrl(req)}/?verify=${token}`;
+  await mailer.send({
+    to: user.email,
+    subject: "Confirm your email — Marathon Trainer",
+    text: `Confirm this address to finish setting up your account:\n\n${link}\n\n` +
+      `The link works for 24 hours. If you didn't sign up, ignore this email.`,
+  });
+}
+
 /* ---------- rate limiting for auth endpoints ---------- */
 
 const authAttempts = new Map(); // ip -> {count, resetAt}
@@ -190,18 +262,28 @@ function handleRegister(req, res) {
 
     const id = crypto.randomUUID();
     const salt = crypto.randomBytes(16).toString("hex");
-    writeJson(userFile(id), {
+    const user = {
       id,
       email,
       salt,
       passwordHash: hashPassword(password, salt),
+      // with no mail provider nobody could ever confirm, so don't pretend to
+      emailVerified: !verificationRequired(),
       createdAt: new Date().toISOString(),
-    });
+    };
+    writeJson(userFile(id), user);
     index[email] = id;
     writeJson(USERS_INDEX_FILE, index);
 
+    if (verificationRequired()) {
+      sendVerificationEmail(req, user).catch((e) =>
+        console.error("[verify] mail failed:", e.message));
+    }
+
     const token = createSession(id);
-    sendJson(res, 200, { user: { id, email } }, {
+    sendJson(res, 200, {
+      user: { id, email, emailVerified: user.emailVerified, verificationRequired: verificationRequired() },
+    }, {
       "Set-Cookie": sessionCookie(req, token, SESSION_TTL_MS / 1000),
     });
   });
@@ -219,9 +301,13 @@ function handleLogin(req, res) {
       return sendJson(res, 401, { error: "invalid_credentials" });
     }
     const token = createSession(user.id);
-    sendJson(res, 200, { user: { id: user.id, email: user.email } }, {
-      "Set-Cookie": sessionCookie(req, token, SESSION_TTL_MS / 1000),
-    });
+    sendJson(res, 200, {
+      user: {
+        id: user.id, email: user.email,
+        emailVerified: user.emailVerified !== false,
+        verificationRequired: verificationRequired(),
+      },
+    }, { "Set-Cookie": sessionCookie(req, token, SESSION_TTL_MS / 1000) });
   });
 }
 
@@ -239,7 +325,14 @@ function handleMe(req, res) {
   if (!session) return sendJson(res, 401, { error: "not_logged_in" });
   const user = readJson(userFile(session.userId), null);
   if (!user) return sendJson(res, 401, { error: "not_logged_in" });
-  sendJson(res, 200, { user: { id: user.id, email: user.email } });
+  sendJson(res, 200, {
+    user: {
+      id: user.id,
+      email: user.email,
+      emailVerified: user.emailVerified !== false,
+      verificationRequired: verificationRequired(),
+    },
+  });
 }
 
 function handleData(req, res) {
@@ -271,6 +364,99 @@ function handleData(req, res) {
   sendJson(res, 405, { error: "method_not_allowed" });
 }
 
+/* ---------- password reset & email verification ---------- */
+
+function handleForgot(req, res) {
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  readJsonBody(req, res, MAX_AUTH_BODY_BYTES, async (body) => {
+    const email = String(body.email || "").trim().toLowerCase();
+    // always the same answer: never confirm whether an address has an account
+    const done = () => sendJson(res, 200, { ok: true });
+    const index = readJson(USERS_INDEX_FILE, {});
+    const id = index[email];
+    const user = id && readJson(userFile(id), null);
+    if (!user) return done();
+    try {
+      const token = issueToken("reset", user.id, RESET_TTL_MS);
+      await mailer.send({
+        to: user.email,
+        subject: "Reset your password — Marathon Trainer",
+        text: `Someone asked to reset the password for this account.\n\n` +
+          `${appUrl(req)}/?reset=${token}\n\n` +
+          `The link works for one hour and can be used once. If this wasn't ` +
+          `you, ignore this email — your password is unchanged.`,
+      });
+    } catch (e) {
+      console.error("[reset] mail failed:", e.message);
+    }
+    done();
+  });
+}
+
+function handleResetPassword(req, res) {
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  readJsonBody(req, res, MAX_AUTH_BODY_BYTES, (body) => {
+    const password = String(body.password || "");
+    if (password.length < MIN_PASSWORD_LENGTH || password.length > 200) {
+      return sendJson(res, 400, { error: "password_too_short" });
+    }
+    const userId = consumeToken("reset", String(body.token || ""));
+    if (!userId) return sendJson(res, 400, { error: "invalid_or_expired_token" });
+    const user = readJson(userFile(userId), null);
+    if (!user) return sendJson(res, 400, { error: "invalid_or_expired_token" });
+
+    const salt = crypto.randomBytes(16).toString("hex");
+    user.salt = salt;
+    user.passwordHash = hashPassword(password, salt);
+    // reaching the inbox proves ownership, so this also verifies the address
+    user.emailVerified = true;
+    writeJson(userFile(userId), user);
+
+    // a reset may be a recovery from compromise: drop every existing session
+    let dropped = false;
+    for (const [tok, s] of Object.entries(sessions)) {
+      if (s.userId === userId) { delete sessions[tok]; dropped = true; }
+    }
+    if (dropped) writeJson(SESSIONS_FILE, sessions);
+
+    const token = createSession(userId);
+    sendJson(res, 200, {
+      user: {
+        id: user.id, email: user.email,
+        emailVerified: true, verificationRequired: verificationRequired(),
+      },
+    }, { "Set-Cookie": sessionCookie(req, token, SESSION_TTL_MS / 1000) });
+  });
+}
+
+function handleVerifyEmail(req, res) {
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  readJsonBody(req, res, MAX_AUTH_BODY_BYTES, (body) => {
+    const userId = consumeToken("verify", String(body.token || ""));
+    if (!userId) return sendJson(res, 400, { error: "invalid_or_expired_token" });
+    const user = readJson(userFile(userId), null);
+    if (!user) return sendJson(res, 400, { error: "invalid_or_expired_token" });
+    user.emailVerified = true;
+    writeJson(userFile(userId), user);
+    sendJson(res, 200, { ok: true, email: user.email });
+  });
+}
+
+function handleResendVerification(req, res) {
+  const session = sessionFor(req);
+  if (!session) return sendJson(res, 401, { error: "not_logged_in" });
+  if (rateLimited(req)) return sendJson(res, 429, { error: "too_many_attempts" });
+  const user = readJson(userFile(session.userId), null);
+  if (!user) return sendJson(res, 401, { error: "not_logged_in" });
+  if (user.emailVerified) return sendJson(res, 200, { ok: true, alreadyVerified: true });
+  sendVerificationEmail(req, user)
+    .then(() => sendJson(res, 200, { ok: true }))
+    .catch((e) => {
+      console.error("[verify] mail failed:", e.message);
+      sendJson(res, 500, { error: "mail_failed" });
+    });
+}
+
 /* ---------- plan sharing (per-recipient inbox) ---------- */
 
 function handleShareSend(req, res) {
@@ -291,6 +477,11 @@ function handleShareSend(req, res) {
     const recipientId = index[email];
     if (!recipientId) return sendJson(res, 404, { error: "recipient_not_found" });
     if (recipientId === session.userId) return sendJson(res, 400, { error: "cannot_share_with_self" });
+    // an unverified signup could be squatting someone else's address
+    const recipient = readJson(userFile(recipientId), null);
+    if (verificationRequired() && recipient && recipient.emailVerified === false) {
+      return sendJson(res, 409, { error: "recipient_unverified" });
+    }
     const inbox = readJson(inboxFile(recipientId), []);
     if (inbox.length >= MAX_INBOX_ITEMS) return sendJson(res, 409, { error: "inbox_full" });
     const sender = readJson(userFile(session.userId), null);
@@ -378,6 +569,10 @@ const API_ROUTES = {
   "GET /api/shares": handleSharesList,
   "POST /api/shares/dismiss": handleShareDismiss,
   "GET /api/admin/backup": handleAdminBackup,
+  "POST /api/forgot": handleForgot,
+  "POST /api/reset": handleResetPassword,
+  "POST /api/verify": handleVerifyEmail,
+  "POST /api/verify/resend": handleResendVerification,
 };
 
 /* ---------- static files ---------- */

@@ -142,7 +142,27 @@ DATA_DIR=/app/data node backup.js --restore path/to/backup.json.gz --force
 Treat snapshots as sensitive: they contain email addresses and password
 hashes (hashes, not passwords).
 
-**Limitations to know about:** there's no password-reset flow (the server
-never learns usable emails for sending mail) — resetting a forgotten password
-currently means an admin editing the data directory. Fine for a small group of
-training partners; add a mail provider if you outgrow it.
+## Email: password reset & verification
+
+Set `MAIL_PROVIDER=resend` plus `RESEND_API_KEY`, `MAIL_FROM` and `APP_URL`
+to send real mail (Resend is a plain HTTPS call, so there's still no npm
+dependency). With **no provider configured** the app still works: links are
+written to the server log, so an operator can recover an account by reading
+the logs instead of editing JSON on the volume.
+
+- **Reset** — "Forgot password?" emails a single-use link that expires in an
+  hour. The response is identical whether or not the address has an account,
+  so the endpoint never reveals who is registered. Completing a reset also
+  invalidates every existing session for that user, in case the reset is a
+  recovery from compromise.
+- **Verification** — enforced only when mail is actually configured
+  (override with `REQUIRE_EMAIL_VERIFICATION`). Until an address is confirmed
+  it can't *receive* shared plans, which closes the hole where someone signs
+  up with an address they don't own and collects plans meant for its owner.
+
+Only the SHA-256 of each token is stored, so a leaked `tokens.json` cannot be
+used to take over an account.
+
+**Limitations to know about:** account deletion isn't implemented yet, and
+sharing still confirms whether an address has an account (the reset flow does
+not). See FEATURES.md for the prioritized list.

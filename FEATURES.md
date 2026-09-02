@@ -32,8 +32,8 @@ between this being your training app and being your group's training app.
 | # | Item | Why now | Effort |
 |---|------|---------|--------|
 | 1 | ~~**Automated volume backups**~~ | ✅ **Done.** Scheduled on-volume snapshots with rotation, a token-gated `GET /api/admin/backup` for off-box pulls, a nightly GitHub Action keeping 90-day artifacts, and a restore CLI. Verified by restoring a simulated volume wipe. | S |
-| 2 | **Password reset** | Today a forgotten password means an admin hand-editing JSON on the volume. That is not something you can ask a training partner to accept. Needs a mail provider (Resend/Postmark, free at this volume) plus a token flow. Unblocks #3. | M |
-| 3 | **Email verification** | Sharing targets accounts *by email address*. An unverified signup can squat an address and receive plans meant for someone else. Same mail provider as #2, so do them together. | S |
+| 2 | ~~**Password reset**~~ | ✅ **Done.** Single-use, one-hour, hash-stored tokens; neutral responses that never reveal who has an account; completing a reset drops every existing session. Works with Resend, or logs links to the server when no provider is set. | M |
+| 3 | ~~**Email verification**~~ | ✅ **Done.** Confirmation on signup, resend from Settings, and unverified accounts cannot receive shared plans — enforced only when mail is actually configured. | S |
 | 4 | ~~**Restore the e2e suites + CI**~~ | ✅ **Done.** Rebuilt as `accounts-and-sharing` (isolation, sync, hostile-share sanitisation) and `scheduling` (alignment, truncation, swaps, md/PDF import) on a shared `lib.js` that boots a throwaway server per suite; all four run via `npm run test:e2e`, and GitHub Actions runs unit + browser suites on every push. | M |
 
 ## P1 — trust and correctness
@@ -69,8 +69,9 @@ between this being your training app and being your group's training app.
 
 ## Suggested next move
 
-**#1 and #4 together.** Backups remove the only failure that can't be undone,
-and restoring the test suites protects everything already built — including
-the auth isolation and shared-plan sanitisation that guard other people's
-data. #2 + #3 follow immediately if you're adding training partners, and they
-need one decision from you: which mail provider.
+P0 is complete. P1 is next: security headers (#5), account deletion (#6),
+persistent rate limits (#7), and visible sync conflicts (#8).
+
+To switch email from "logged to the console" to real delivery, set
+`MAIL_PROVIDER=resend`, `RESEND_API_KEY`, `MAIL_FROM` and `APP_URL` on the
+Railway service — no code change needed.

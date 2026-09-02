@@ -1144,3 +1144,14 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   .sched-date { min-width: 6em; }
   .card-cta { display: none; }
 }
+
+/* ---------- auth notices ---------- */
+
+.auth-notice {
+  font-size: 0.9rem;
+  color: var(--neon-lime);
+  border-left: 2px solid var(--neon-lime);
+  padding-left: 10px;
+  margin: 4px 0 12px;
+}
+.verify-ok { color: var(--neon-lime); }
