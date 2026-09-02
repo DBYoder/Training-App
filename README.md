@@ -37,6 +37,12 @@ went to track your progress.
 - **Training journal** — per day: completed / modified / skipped, distance,
   total time (average pace computed), effort (RPE 1–10), a star rating, and
   free-form notes for splits, weather, and fueling.
+- **Second session** — every day also takes an optional second activity for the
+  doubles, cross-training and strength work plans suggest (easy double, uphill
+  treadmill, bike/elliptical/swim, strength, other), with its own distance,
+  time, notes and GPX import. The block opens automatically on days whose plan
+  text mentions one. Running kinds add to weekly mileage; cross-training and
+  strength are counted separately.
 - **Progress tracking** — days to race, percent through the plan, workouts
   completed, total miles, a miles-per-week chart, and a week-by-week table.
 - **Cross-device sync** — changes push automatically and merge by

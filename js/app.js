@@ -935,6 +935,7 @@ function dayCard(info, i, { heading } = {}) {
   if (entry && entry.distance) loggedBits.push(`${entry.distance} mi`);
   if (entry && entry.duration) loggedBits.push(entry.duration);
   if (pace) loggedBits.push(pace);
+  const second = secondOf(entry);
   return `
     <article class="day-card type-${day.type}" data-day="${i}" tabindex="0" role="button"
              aria-label="Open day ${i + 1}">
@@ -951,6 +952,7 @@ function dayCard(info, i, { heading } = {}) {
       <div class="card-footer">
         ${statusBadge(entry)}
         ${loggedBits.length ? `<span class="logged-bits">${esc(loggedBits.join(" · "))}</span>` : ""}
+        ${second ? `<span class="second-chip" title="second session">+ ${esc(secondSummary(second))}</span>` : ""}
         ${!(entry && entry.status) && day.type !== "rest" && i <= info.todayIdx
           ? `<button class="btn quick-log" data-quicklog="${i}">✓ done</button>` : ""}
         <span class="card-cta">${entry && entry.status ? "View / edit journal →" : "Open & journal →"}</span>
@@ -1076,7 +1078,7 @@ function plannedMilesForDay(day) {
 
 function weeklyTotals(info) {
   return info.weeks.map((w) => {
-    let miles = 0, runs = 0, logged = 0, plannedLo = 0, plannedHi = 0, trainingDays = 0;
+    let miles = 0, runs = 0, logged = 0, plannedLo = 0, plannedHi = 0, trainingDays = 0, xtrain = 0;
     for (let i = w.firstIdx; i <= w.lastIdx; i++) {
       const day = info.days[i];
       if (day.type !== "rest") trainingDays++; // rest days don't count against you
@@ -1091,10 +1093,21 @@ function weeklyTotals(info) {
         miles += Number(e.distance);
         runs++;
       }
+      // a logged second session counts on its own, even if the main run was
+      // skipped; only running kinds add to weekly mileage
+      const second = secondOf(e);
+      if (second) {
+        if (secondIsRun(second)) {
+          if (second.distance) miles += Number(second.distance);
+          runs++;
+        } else {
+          xtrain++;
+        }
+      }
     }
     return {
       week: w.week, firstIdx: w.firstIdx, lastIdx: w.lastIdx,
-      miles: Math.round(miles * 10) / 10, runs,
+      miles: Math.round(miles * 10) / 10, runs, xtrain,
       logged: Math.min(logged, trainingDays), dayCount: trainingDays,
       plannedLo: Math.round(plannedLo), plannedHi: Math.round(plannedHi),
     };
@@ -1127,8 +1140,10 @@ function renderProgress() {
       : "—";
     return `<tr><td>Week ${t.week}</td><td>${range}</td><td class="num">${planned}</td>
       <td class="num">${t.miles || "—"}</td>
-      <td class="num">${t.runs || "—"}</td><td class="num">${t.logged}/${t.dayCount}</td></tr>`;
+      <td class="num">${t.runs || "—"}</td><td class="num">${t.xtrain || "—"}</td>
+      <td class="num">${t.logged}/${t.dayCount}</td></tr>`;
   }).join("");
+  const totalXtrain = totals.reduce((s, t) => s + t.xtrain, 0);
 
   el.innerHTML = `
     <div class="stat-row">
@@ -1136,6 +1151,7 @@ function renderProgress() {
       <div class="stat-tile"><div class="stat-value">${pct}%</div><div class="stat-label">through the plan</div></div>
       <div class="stat-tile"><div class="stat-value">${completed}</div><div class="stat-label">workouts completed</div></div>
       <div class="stat-tile"><div class="stat-value">${totalMiles}</div><div class="stat-label">miles logged</div></div>
+      ${totalXtrain ? `<div class="stat-tile"><div class="stat-value">${totalXtrain}</div><div class="stat-label">x-train / strength</div></div>` : ""}
     </div>
     <div class="chart-card viz-root">
       <h2 class="chart-title">Miles logged per week</h2>
@@ -1153,7 +1169,7 @@ function renderProgress() {
     <div class="chart-card">
       <h2 class="chart-title">Week by week</h2>
       <div class="table-wrap"><table class="week-table">
-        <thead><tr><th>Week</th><th>Dates</th><th class="num">Planned mi</th><th class="num">Miles</th><th class="num">Runs</th><th class="num">Days logged</th></tr></thead>
+        <thead><tr><th>Week</th><th>Dates</th><th class="num">Planned mi</th><th class="num">Miles</th><th class="num">Runs</th><th class="num">X-train</th><th class="num">Days logged</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>
     </div>`;
@@ -2058,6 +2074,45 @@ function wirePaceCard() {
   });
 }
 
+/* ----- second session (optional double / cross-training / strength) -----
+ * Many plans suggest an optional second activity ("optional uphill TM or
+ * x-train double", "full strength routine"). Entries carry an optional
+ * `second` object; only running kinds add to weekly running mileage. */
+const SECOND_KINDS = {
+  double:     { label: "easy double (run)",   run: true },
+  treadmill:  { label: "uphill treadmill",    run: true },
+  bike:       { label: "x-train — bike",      run: false },
+  elliptical: { label: "x-train — elliptical", run: false },
+  swim:       { label: "x-train — swim",      run: false },
+  xtrain:     { label: "x-train — other",     run: false },
+  strength:   { label: "strength",            run: false },
+  other:      { label: "other",               run: false },
+};
+
+function secondOf(entry) {
+  const s = entry && entry.second;
+  if (!s) return null;
+  return (s.kind || s.distance || s.duration || s.notes) ? s : null;
+}
+
+function secondIsRun(second) {
+  return Boolean(second && SECOND_KINDS[second.kind]?.run);
+}
+
+function secondSummary(second) {
+  const bits = [];
+  if (second.kind) bits.push(SECOND_KINDS[second.kind]?.label || second.kind);
+  if (second.distance) bits.push(`${second.distance} mi`);
+  if (second.duration) bits.push(second.duration);
+  return bits.join(" · ") || "second session";
+}
+
+/* Does the plan itself suggest an optional second activity this day? */
+function daySuggestsSecond(day) {
+  return /\bdouble\b|x-train|cross-?train|uphill (tm|treadmill)|strength/i
+    .test(`${day.title} ${day.details.join(" ")}`);
+}
+
 /* ----- GPX import (watch / Strava "Export GPX") ----- */
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -2115,6 +2170,7 @@ function openDay(i) {
   const day = info.days[i];
   const date = addDays(info.start, i);
   const entry = entryFor(i) || {};
+  const existingSecond = secondOf(entry);
   const modal = $("#day-modal");
 
   const details = day.details.map((d) => `<p>${detailHTML(info.plan, d)}</p>`).join("");
@@ -2170,9 +2226,45 @@ function openDay(i) {
       <label class="notes-label">Notes — splits, times, weather, fueling, how the legs felt…
         <textarea name="notes" rows="5" placeholder="e.g. 6 × 5min at 6:45 pace, 2min jog. Warm out. Felt strong on the last two reps.">${esc(entry.notes ?? "")}</textarea>
       </label>
+      <details class="second-block" id="second-block" ${existingSecond || daySuggestsSecond(day) ? "open" : ""}>
+        <summary>
+          <span class="summary-h3">// second session</span>
+          <span class="hint second-hint">${existingSecond
+            ? esc(secondSummary(existingSecond))
+            : "double, cross-training, or strength — optional"}</span>
+        </summary>
+        <div class="form-grid">
+          <label>Activity
+            <select name="secondKind">
+              <option value="">— none —</option>
+              ${Object.entries(SECOND_KINDS).map(([k, v]) =>
+                `<option value="${k}" ${existingSecond?.kind === k ? "selected" : ""}>${v.label}</option>`).join("")}
+            </select>
+          </label>
+          <label>Distance (miles)
+            <input type="number" name="secondDistance" min="0" max="200" step="0.1"
+                   value="${existingSecond?.distance ?? ""}" placeholder="runs only">
+          </label>
+          <label>Time
+            <input type="text" name="secondDuration" inputmode="numeric" pattern="[0-9:]*"
+                   value="${esc(existingSecond?.duration ?? "")}" placeholder="hh:mm:ss or mm:ss">
+          </label>
+          <label>Notes
+            <input type="text" name="secondNotes" maxlength="300"
+                   value="${esc(existingSecond?.notes ?? "")}" placeholder="e.g. 45 min Z2, 12% grade">
+          </label>
+        </div>
+        <div class="inline-controls gpx-row">
+          <label class="btn">import .gpx<input type="file" class="gpx-file-second" accept=".gpx" hidden></label>
+          <span class="gpx-msg-second hint"></span>
+        </div>
+        <div class="pace-line" id="second-pace-line"></div>
+        <p class="hint">Only running kinds (easy double, uphill treadmill) count toward weekly
+        mileage; cross-training and strength are tracked separately.</p>
+      </details>
       <div class="modal-actions">
         <button type="submit" class="btn primary">Save entry</button>
-        ${entry.status || entry.notes || entry.distance ? '<button type="button" id="clear-entry" class="btn danger">Delete entry</button>' : ""}
+        ${entry.status || entry.notes || entry.distance || existingSecond ? '<button type="button" id="clear-entry" class="btn danger">Delete entry</button>' : ""}
         <span id="save-confirm" class="save-confirm" hidden>Saved ✓</span>
       </div>
     </form>`;
@@ -2184,6 +2276,10 @@ function openDay(i) {
     const secs = parseDuration(form.duration.value);
     $("#pace-line").textContent =
       dist > 0 && secs ? `Average pace: ${formatPace(secs / dist)}` : "";
+    const d2 = parseFloat(form.secondDistance.value);
+    const s2 = parseDuration(form.secondDuration.value);
+    $("#second-pace-line").textContent =
+      d2 > 0 && s2 ? `Average pace: ${formatPace(s2 / d2)}` : "";
   };
   updatePace();
   $("#journal-form").addEventListener("input", updatePace);
@@ -2212,6 +2308,26 @@ function openDay(i) {
     ev.target.value = "";
   });
 
+  $(".gpx-file-second", modal).addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const form = $("#journal-form");
+    const msgEl = $(".gpx-msg-second", modal);
+    msgEl.classList.remove("sync-error");
+    try {
+      const gpx = parseGpx(await file.text());
+      form.secondDistance.value = gpx.miles.toFixed(1);
+      if (gpx.seconds) form.secondDuration.value = formatDurationInput(gpx.seconds);
+      if (!form.secondKind.value) form.secondKind.value = "double";
+      updatePace();
+      msgEl.textContent = `imported ${gpx.miles.toFixed(2)} mi${gpx.seconds ? ` · ${formatDurationInput(gpx.seconds)} elapsed` : ""}`;
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.classList.add("sync-error");
+    }
+    ev.target.value = "";
+  });
+
   $$("#stars .star").forEach((btn) => {
     btn.addEventListener("click", () => {
       const r = Number(btn.dataset.rating);
@@ -2224,6 +2340,12 @@ function openDay(i) {
   $("#journal-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const form = ev.target;
+    const second = {
+      kind: form.secondKind.value || "",
+      distance: form.secondDistance.value ? Number(form.secondDistance.value) : null,
+      duration: form.secondDuration.value.trim() || null,
+      notes: form.secondNotes.value.trim() || null,
+    };
     const entryOut = {
       status: form.status.value || "",
       distance: form.distance.value ? Number(form.distance.value) : null,
@@ -2231,10 +2353,11 @@ function openDay(i) {
       rpe: form.rpe.value ? Number(form.rpe.value) : null,
       rating: rating || null,
       notes: form.notes.value.trim() || null,
+      second: secondOf({ second }) ? second : null,
       updatedAt: new Date().toISOString(),
     };
     const hasContent = entryOut.status || entryOut.distance || entryOut.duration ||
-      entryOut.rpe || entryOut.rating || entryOut.notes;
+      entryOut.rpe || entryOut.rating || entryOut.notes || entryOut.second;
     if (hasContent) setEntry(i, entryOut);
     else deleteEntry(i);
     saveState();

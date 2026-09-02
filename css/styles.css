@@ -969,6 +969,42 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 }
 .gpx-row { margin-top: 10px; }
 
+/* ---------- second session (double / x-train / strength) ---------- */
+
+.second-block {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 10px 14px;
+  margin-top: 14px;
+}
+.second-block[open] { border-color: var(--border-bright); }
+.second-block summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.summary-h3 {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--neon-purple);
+}
+.second-hint { font-size: 0.8rem; }
+.second-block .form-grid { margin-top: 12px; }
+.second-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--neon-purple);
+  background: var(--neon-purple-08);
+  border: 1px solid rgba(184, 41, 255, 0.35);
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
 .rating-line {
   display: flex;
   align-items: center;
