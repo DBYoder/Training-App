@@ -89,10 +89,14 @@
   --neon-orange-08: rgba(255, 102, 0, 0.08);
   --neon-yellow-08: rgba(255, 238, 0, 0.08);
 
-  /* Foreground */
+  /* Foreground.
+   * NEON//GRID specifies --fg-muted as #44445a, but that measures 1.9:1 on
+   * the card surface — below WCAG AA even for large text — and it carries
+   * real content (dates, form labels, table headers) at 10–11px. Lifted to
+   * the nearest hue-preserving step that clears AA (4.5:1). */
   --fg-primary:     #e8e8f0;
-  --fg-secondary:   #8888aa;
-  --fg-muted:       #44445a;
+  --fg-secondary:   #8888aa;   /* 5.26:1 on card */
+  --fg-muted:       #7c7ca4;   /* 4.51:1 on card (was #44445a, 1.90:1) */
   --fg-disabled:    #2a2a3a;
   --fg-inverse:     #050508;
 
@@ -709,7 +713,8 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
 .schedule-form select, .schedule-form input[type="text"], .schedule-form input[type="date"] {
   max-width: 420px;
 }
-.hint-inline { font-weight: 400; color: var(--fg-disabled); text-transform: none; }
+/* "(optional)" is information, not a disabled control — needs readable ink */
+.hint-inline { font-weight: 400; color: var(--fg-muted); text-transform: none; }
 .mode-fieldset { border: 1px solid var(--border); border-radius: 0; padding: 10px 14px 14px; }
 .mode-fieldset legend { padding: 0 6px; }
 .radio-row {
@@ -1023,7 +1028,8 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   border: none;
   font-size: 1.4rem;
   line-height: 1;
-  color: var(--fg-disabled);
+  /* unlit = unselected, not disabled; kept legible against the lit yellow */
+  color: #7c7ca4;
   cursor: pointer;
   padding: 2px;
   transition: color var(--duration-micro), text-shadow var(--duration-micro);
@@ -1054,6 +1060,83 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   font-size: 11px;
   letter-spacing: 0.08em;
   padding: 24px 16px;
+}
+
+/* ---------- mobile: larger type, higher contrast ----------
+ * Phone screens are read at arm's length in daylight, often mid-run. Small
+ * mono micro-labels and the dimmest ink tier don't survive that, so on small
+ * screens the ink tiers step up (all >= 6:1) and the 10–11px labels grow.
+ */
+@media (max-width: 640px) {
+  :root {
+    --fg-secondary: #b0b0d8;   /* 8.60:1 on card (from 5.26) */
+    --fg-muted:     #9494c3;   /* 6.23:1 on card (from 4.51) */
+    --neon-purple:  #c86bff;   /* 5.99:1 — workout accents readable as text */
+  }
+
+  body { font-size: 18px; }
+
+  /* micro-labels: the mono 10–11px tier */
+  .card-meta,
+  .card-cta,
+  .logged-bits,
+  .sched-date,
+  .week-range,
+  .app-footer,
+  .countdown-chip,
+  .status-badge,
+  .chart-tooltip { font-size: 13px; }
+
+  .card-heading,
+  .section-label,
+  .summary-h3,
+  .sidenav-section,
+  .type-tag,
+  .stat-label,
+  .pace-chip,
+  .second-chip,
+  .today-pill,
+  .form-grid label,
+  .notes-label,
+  .schedule-form label,
+  .schedule-form fieldset,
+  .builder-grid label,
+  .builder-name,
+  .auth-card form label,
+  .rating-line,
+  .swap-label,
+  .week-table th { font-size: 12px; }
+
+  .hint { font-size: 0.95rem; }
+  .card-title { font-size: 17px; }
+  .card-detail { font-size: 1rem; }
+  .sched-title, .sched-row { font-size: 1rem; }
+  .tabs button { font-size: 13px; }
+  .app-header h1 { font-size: 16px; }
+  .week-table { font-size: 0.95rem; }
+  .week-table .num { font-size: 14px; }
+
+  /* buttons: readable labels and finger-sized targets */
+  .btn { font-size: 12px; padding: 11px 18px; }
+  .plan-row-actions .btn { font-size: 12px; padding: 10px 14px; }
+  /* tighter tracking so all five tabs fit a 390px screen without scrolling */
+  .tabs button { padding: 10px 7px 12px; letter-spacing: 0.04em; }
+  .tabs { gap: 2px; }
+  .star { font-size: 1.6rem; padding: 4px; }
+  .stat-value { font-size: 1.9rem; }
+  .modal-body h2 { font-size: 19px; }
+  .pace-line, .save-confirm, .second-hint { font-size: 14px; }
+
+  /* 16px minimum stops iOS Safari zooming the page on focus */
+  input[type="date"], input[type="text"], input[type="number"], input[type="email"],
+  input[type="password"], select, textarea { font-size: 16px; }
+
+  /* the plan text is the thing you actually read on a workout */
+  .workout-details p { font-size: 1rem; }
+
+  /* charts switch to a phone-sized viewBox (see isNarrowViewport), so these
+     units now render close to 1:1 */
+  .viz-root .axis-label { font-size: 12px; }
 }
 
 @media (max-width: 480px) {

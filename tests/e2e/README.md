@@ -6,6 +6,7 @@ Browser tests driven by Playwright against a locally-running server.
 npm install --no-save playwright-core        # once
 DATA_DIR=/tmp/e2e-data PORT=4582 node server.js &
 node tests/e2e/second-session.js
+node tests/e2e/mobile-a11y.js      # phone viewport: text size + WCAG contrast
 ```
 
 If `playwright-core` is installed outside the repo, point Node at it:

@@ -1193,10 +1193,23 @@ function renderProgress() {
   drawPaceTrend(info, totals);
 }
 
+/* The charts draw in viewBox units stretched to the container's width. On a
+ * phone a 720-unit box is squeezed to ~44%, which would render 11px labels at
+ * under 5px — so narrow screens get a viewBox close to their real width and
+ * everything is drawn at near 1:1. */
+function isNarrowViewport() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
 function drawMileageChart(info, totals) {
   const container = $("#mileage-chart");
-  const W = 720, H = 260;
-  const margin = { top: 12, right: 12, bottom: 28, left: 36 };
+  const narrow = isNarrowViewport();
+  // match the viewBox to the real container width so labels render 1:1
+  const W = narrow ? Math.max(280, Math.round(container.clientWidth) || 320) : 720;
+  const H = narrow ? 220 : 260;
+  const margin = narrow
+    ? { top: 10, right: 8, bottom: 26, left: 30 }
+    : { top: 12, right: 12, bottom: 28, left: 36 };
   const iw = W - margin.left - margin.right;
   const ih = H - margin.top - margin.bottom;
   const maxMiles = Math.max(10, ...totals.map((t) => Math.max(t.miles, t.plannedHi || 0)));
@@ -1204,7 +1217,7 @@ function drawMileageChart(info, totals) {
   const ticks = [0, yMax / 2, yMax];
   const n = totals.length;
   const slot = iw / n;
-  const barW = Math.min(34, slot * 0.6);
+  const barW = Math.min(narrow ? 18 : 34, slot * 0.6);
   const currentWeek = totals.find((t) => info.todayIdx >= t.firstIdx && info.todayIdx <= t.lastIdx);
 
   const y = (v) => margin.top + ih - (v / yMax) * ih;
@@ -1289,8 +1302,13 @@ function drawPaceTrend(info, totals) {
   if (withData.length < 1) return; // card stays hidden
   card.hidden = false;
 
-  const W = 720, H = 200;
-  const margin = { top: 14, right: 12, bottom: 28, left: 48 };
+  const narrow = isNarrowViewport();
+  const paceContainer = $("#pace-chart");
+  const W = narrow ? Math.max(280, Math.round(paceContainer.clientWidth) || 320) : 720;
+  const H = narrow ? 180 : 200;
+  const margin = narrow
+    ? { top: 12, right: 8, bottom: 26, left: 40 }
+    : { top: 14, right: 12, bottom: 28, left: 48 };
   const iw = W - margin.left - margin.right;
   const ih = H - margin.top - margin.bottom;
   const n = points.length;
@@ -1324,7 +1342,7 @@ function drawPaceTrend(info, totals) {
   const labels = points.map((p, idx) =>
     `<text x="${x(idx)}" y="${H - 10}" class="axis-label" text-anchor="middle">${p.week}</text>`).join("");
 
-  $("#pace-chart").innerHTML = `
+  paceContainer.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Line chart of average pace per training week"
          style="width:100%;height:auto;display:block">
       ${grid}
@@ -2542,6 +2560,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   window.addEventListener("pagehide", flushPendingPush);
+
+  // charts are drawn for a phone- or desktop-sized viewBox, so redraw when a
+  // rotation or resize crosses that breakpoint
+  let wasNarrow = isNarrowViewport();
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const nowNarrow = isNarrowViewport();
+      if (nowNarrow !== wasNarrow) {
+        wasNarrow = nowNarrow;
+        if (activeTab === "progress" && !$("#day-modal").open) render();
+      }
+    }, 200);
+  });
 
   // PWA: offline shell + installability (silent no-op where unsupported)
   if ("serviceWorker" in navigator) {
