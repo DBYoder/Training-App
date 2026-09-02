@@ -1078,7 +1078,8 @@ function plannedMilesForDay(day) {
 
 function weeklyTotals(info) {
   return info.weeks.map((w) => {
-    let miles = 0, runs = 0, logged = 0, plannedLo = 0, plannedHi = 0, trainingDays = 0, xtrain = 0;
+    let miles = 0, runs = 0, logged = 0, plannedLo = 0, plannedHi = 0, trainingDays = 0;
+    let xtrain = 0, xtrainSeconds = 0;
     for (let i = w.firstIdx; i <= w.lastIdx; i++) {
       const day = info.days[i];
       if (day.type !== "rest") trainingDays++; // rest days don't count against you
@@ -1101,13 +1102,15 @@ function weeklyTotals(info) {
           if (second.distance) miles += Number(second.distance);
           runs++;
         } else {
+          // cross-training and strength are measured in time, never miles
           xtrain++;
+          xtrainSeconds += parseDuration(second.duration) || 0;
         }
       }
     }
     return {
       week: w.week, firstIdx: w.firstIdx, lastIdx: w.lastIdx,
-      miles: Math.round(miles * 10) / 10, runs, xtrain,
+      miles: Math.round(miles * 10) / 10, runs, xtrain, xtrainSeconds,
       logged: Math.min(logged, trainingDays), dayCount: trainingDays,
       plannedLo: Math.round(plannedLo), plannedHi: Math.round(plannedHi),
     };
@@ -1138,12 +1141,20 @@ function renderProgress() {
     const planned = t.plannedHi
       ? (t.plannedLo === t.plannedHi ? `${t.plannedHi}` : `${t.plannedLo}–${t.plannedHi}`)
       : "—";
+    // cross-training is reported as time; fall back to a session count only
+    // when sessions were logged without a duration
+    const xtrainCell = t.xtrainSeconds
+      ? formatHoursMin(t.xtrainSeconds)
+      : (t.xtrain ? `${t.xtrain}×` : "—");
+    const xtrainTitle = t.xtrain
+      ? ` title="${t.xtrain} session${t.xtrain === 1 ? "" : "s"}"` : "";
     return `<tr><td>Week ${t.week}</td><td>${range}</td><td class="num">${planned}</td>
       <td class="num">${t.miles || "—"}</td>
-      <td class="num">${t.runs || "—"}</td><td class="num">${t.xtrain || "—"}</td>
+      <td class="num">${t.runs || "—"}</td><td class="num"${xtrainTitle}>${xtrainCell}</td>
       <td class="num">${t.logged}/${t.dayCount}</td></tr>`;
   }).join("");
   const totalXtrain = totals.reduce((s, t) => s + t.xtrain, 0);
+  const totalXtrainSeconds = totals.reduce((s, t) => s + t.xtrainSeconds, 0);
 
   el.innerHTML = `
     <div class="stat-row">
@@ -1151,7 +1162,11 @@ function renderProgress() {
       <div class="stat-tile"><div class="stat-value">${pct}%</div><div class="stat-label">through the plan</div></div>
       <div class="stat-tile"><div class="stat-value">${completed}</div><div class="stat-label">workouts completed</div></div>
       <div class="stat-tile"><div class="stat-value">${totalMiles}</div><div class="stat-label">miles logged</div></div>
-      ${totalXtrain ? `<div class="stat-tile"><div class="stat-value">${totalXtrain}</div><div class="stat-label">x-train / strength</div></div>` : ""}
+      ${totalXtrain ? `<div class="stat-tile"><div class="stat-value">${
+        totalXtrainSeconds ? formatHoursMin(totalXtrainSeconds) : totalXtrain
+      }</div><div class="stat-label">${
+        totalXtrainSeconds ? "x-train / strength (h:mm)" : "x-train sessions"
+      }</div></div>` : ""}
     </div>
     <div class="chart-card viz-root">
       <h2 class="chart-title">Miles logged per week</h2>
@@ -2102,9 +2117,17 @@ function secondIsRun(second) {
 function secondSummary(second) {
   const bits = [];
   if (second.kind) bits.push(SECOND_KINDS[second.kind]?.label || second.kind);
-  if (second.distance) bits.push(`${second.distance} mi`);
+  // cross-training is measured in time, not distance
+  if (secondIsRun(second) && second.distance) bits.push(`${second.distance} mi`);
   if (second.duration) bits.push(second.duration);
   return bits.join(" · ") || "second session";
+}
+
+/* Compact h:mm for accumulated training time. */
+function formatHoursMin(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return m === 60 ? `${h + 1}:00` : `${h}:${String(m).padStart(2, "0")}`;
 }
 
 /* Does the plan itself suggest an optional second activity this day? */
@@ -2245,7 +2268,7 @@ function openDay(i) {
             <input type="number" name="secondDistance" min="0" max="200" step="0.1"
                    value="${existingSecond?.distance ?? ""}" placeholder="runs only">
           </label>
-          <label>Time
+          <label>Time<span class="second-time-req"></span>
             <input type="text" name="secondDuration" inputmode="numeric" pattern="[0-9:]*"
                    value="${esc(existingSecond?.duration ?? "")}" placeholder="hh:mm:ss or mm:ss">
           </label>
@@ -2270,6 +2293,17 @@ function openDay(i) {
     </form>`;
 
   let rating = entry.rating || 0;
+  /* Cross-training and strength are measured in time, so distance is only
+   * offered for running kinds — no silently-dropped input. */
+  const syncSecondFields = () => {
+    const form = $("#journal-form");
+    const kind = form.secondKind.value;
+    const isRun = !kind || SECOND_KINDS[kind]?.run;
+    form.secondDistance.disabled = !isRun;
+    form.secondDistance.placeholder = isRun ? "runs only" : "n/a — time only";
+    if (!isRun) form.secondDistance.value = "";
+    $(".second-time-req").textContent = isRun ? "" : " — how it's tracked";
+  };
   const updatePace = () => {
     const form = $("#journal-form");
     const dist = parseFloat(form.distance.value);
@@ -2281,8 +2315,12 @@ function openDay(i) {
     $("#second-pace-line").textContent =
       d2 > 0 && s2 ? `Average pace: ${formatPace(s2 / d2)}` : "";
   };
+  syncSecondFields();
   updatePace();
-  $("#journal-form").addEventListener("input", updatePace);
+  $("#journal-form").addEventListener("input", () => {
+    syncSecondFields();
+    updatePace();
+  });
 
   $(".gpx-file", modal).addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
@@ -2316,9 +2354,11 @@ function openDay(i) {
     msgEl.classList.remove("sync-error");
     try {
       const gpx = parseGpx(await file.text());
-      form.secondDistance.value = gpx.miles.toFixed(1);
-      if (gpx.seconds) form.secondDuration.value = formatDurationInput(gpx.seconds);
+      // a GPS track is a run unless the athlete already said otherwise
       if (!form.secondKind.value) form.secondKind.value = "double";
+      syncSecondFields();
+      if (!form.secondDistance.disabled) form.secondDistance.value = gpx.miles.toFixed(1);
+      if (gpx.seconds) form.secondDuration.value = formatDurationInput(gpx.seconds);
       updatePace();
       msgEl.textContent = `imported ${gpx.miles.toFixed(2)} mi${gpx.seconds ? ` · ${formatDurationInput(gpx.seconds)} elapsed` : ""}`;
     } catch (e) {
@@ -2340,9 +2380,13 @@ function openDay(i) {
   $("#journal-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const form = ev.target;
+    const secondKind = form.secondKind.value || "";
+    const secondTracksMiles = !secondKind || SECOND_KINDS[secondKind]?.run;
     const second = {
-      kind: form.secondKind.value || "",
-      distance: form.secondDistance.value ? Number(form.secondDistance.value) : null,
+      kind: secondKind,
+      // never store miles against a cross-training or strength session
+      distance: secondTracksMiles && form.secondDistance.value
+        ? Number(form.secondDistance.value) : null,
       duration: form.secondDuration.value.trim() || null,
       notes: form.secondNotes.value.trim() || null,
     };

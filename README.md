@@ -42,7 +42,8 @@ went to track your progress.
   treadmill, bike/elliptical/swim, strength, other), with its own distance,
   time, notes and GPX import. The block opens automatically on days whose plan
   text mentions one. Running kinds add to weekly mileage; cross-training and
-  strength are counted separately.
+  strength are measured in **time** instead (distance is disabled for them),
+  reported in their own X-train column and stat tile.
 - **Progress tracking** — days to race, percent through the plan, workouts
   completed, total miles, a miles-per-week chart, and a week-by-week table.
 - **Cross-device sync** — changes push automatically and merge by

@@ -60,6 +60,12 @@ function makeGpx(startIso) {
 
   /* ---- log a cross-training session ---- */
   await page.selectOption('#journal-form select[name="secondKind"]', "bike");
+  if (!(await page.locator('#journal-form input[name="secondDistance"]').isDisabled())) {
+    throw new Error("distance should be disabled for cross-training (time-only)");
+  }
+  const xtPlaceholder = await page.getAttribute('#journal-form input[name="secondDistance"]', "placeholder");
+  if (!/time only/i.test(xtPlaceholder)) throw new Error("placeholder not updated: " + xtPlaceholder);
+  console.log("x-train: distance disabled, tracked by time only ✓");
   await page.fill('#journal-form input[name="secondDuration"]', "45:00");
   await page.fill('#journal-form input[name="secondNotes"]', "Z2 spin, easy legs");
   await page.selectOption('#journal-form select[name="status"]', "completed");
@@ -78,7 +84,15 @@ function makeGpx(startIso) {
   if (kind !== "bike" || dur !== "45:00" || !notes.includes("Z2 spin")) {
     throw new Error(`second session did not round-trip: ${kind}/${dur}/${notes}`);
   }
-  console.log("cross-training session round-trips (bike · 45:00 · notes) ✓");
+  if (!(await page.locator('#journal-form input[name="secondDistance"]').isDisabled())) {
+    throw new Error("distance should stay disabled for a saved bike session");
+  }
+  await page.selectOption('#journal-form select[name="secondKind"]', "double");
+  if (await page.locator('#journal-form input[name="secondDistance"]').isDisabled()) {
+    throw new Error("distance should re-enable for a running double");
+  }
+  await page.selectOption('#journal-form select[name="secondKind"]', "bike");
+  console.log("cross-training session round-trips (bike · 45:00 · notes); distance toggles by kind ✓");
   await page.click("#modal-close");
 
   /* ---- a running double via GPX, on a different day ---- */
@@ -126,11 +140,14 @@ function makeGpx(startIso) {
   // 10 (wed) + 8 (thu) + 6.2 (double) = 24.2 mi; 3 runs; 1 x-train (the bike)
   if (milesCell !== "24.2") throw new Error("double miles not added: " + cells.join(" | "));
   if (runsCell !== "3") throw new Error("double not counted as a run: " + cells.join(" | "));
-  if (xtrainCell !== "1") throw new Error("x-train not counted: " + cells.join(" | "));
-  console.log(`week 9: ${milesCell} mi · ${runsCell} runs · ${xtrainCell} x-train ✓`);
+  // the bike session was 45:00 and must be reported as TIME, never miles
+  if (xtrainCell !== "0:45") throw new Error("x-train should report time (0:45): " + cells.join(" | "));
+  console.log(`week 9: ${milesCell} mi · ${runsCell} runs · ${xtrainCell} x-train time ✓`);
   const tiles = (await page.locator(".stat-tile").allTextContents()).join(" | ");
   if (!/x-train/i.test(tiles)) throw new Error("x-train stat tile missing: " + tiles);
-  console.log("x-train stat tile present ✓");
+  // 45:00 bike + 30:00 strength logged on today's card = 1:15 total
+  if (!/1:15/.test(tiles)) throw new Error("x-train tile should total time (1:15): " + tiles);
+  console.log("x-train stat tile totals time (1:15) ✓");
   await page.screenshot({ path: SHOTS + "/s2-progress.png" });
 
   /* ---- regression: quick-log and entry deletion still work ---- */
