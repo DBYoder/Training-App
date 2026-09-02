@@ -1,0 +1,6 @@
+# playwright-core is installed with --no-save for the browser suites; the app
+# itself has no runtime dependencies and no build step.
+node_modules/
+
+# the volume the server writes accounts, training data and snapshots to
+data/

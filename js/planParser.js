@@ -13,6 +13,10 @@
 
 (function (exportsTarget) {
   const DAY_TYPES = ["rest", "easy", "workout", "long", "race"];
+  const TYPE_TITLES = {
+    rest: "Rest day", easy: "Easy run", workout: "Workout",
+    long: "Long run", race: "Race",
+  };
   const MAX_WEEKS = 60;
   const MAX_DAYS_PER_WEEK = 14;
 
@@ -125,18 +129,31 @@
     return { name: name || fallbackName, weeks, dayHeaders, htmlDetails: true };
   }
 
-  /* rows: [[cellText per day]] — shared by the markdown and PDF paths */
-  function buildWeeksFromCells(rows, dayHeaders) {
+  /* rows: [[cellText per day]] — shared by the markdown and PDF paths.
+   *
+   * `types` is an optional parallel grid of explicit day types. Classification
+   * is a heuristic and gets a small number of days wrong, so anything the
+   * runner has pinned in the builder wins outright; a null/absent entry means
+   * "detect it". A pinned type applies to a blank cell too, so a day can be
+   * marked as something other than rest without inventing text for it. */
+  function buildWeeksFromCells(rows, dayHeaders, types) {
+    const pinned = (wi, di) => {
+      const t = types && types[wi] && types[wi][di];
+      return DAY_TYPES.includes(t) ? t : null;
+    };
     return rows.map((cells, wi) => {
       const days = dayHeaders.map((dow, di) => {
         const raw = cleanCell(cells[di] || "");
         const isLastDay = wi === rows.length - 1 && di === dayHeaders.length - 1;
+        const override = pinned(wi, di);
         if (!raw) {
-          return { dow, type: "rest", title: "Rest day", details: ["Rest."] };
+          return override && override !== "rest"
+            ? { dow, type: override, title: TYPE_TITLES[override], details: [TYPE_TITLES[override] + "."] }
+            : { dow, type: "rest", title: "Rest day", details: ["Rest."] };
         }
         return {
           dow,
-          type: classifyDay(raw, isLastDay),
+          type: override || classifyDay(raw, isLastDay),
           title: escapeHtml(titleFrom(raw)),
           details: [linkify(escapeHtml(raw))],
         };
@@ -304,8 +321,9 @@
 
   /* Build a plan from raw day-cell text entered in the in-app builder.
    * rows: [[cellText per day] per week]. Empty cells become rest days;
-   * types/titles are classified the same way as uploaded plans. */
-  function buildPlan(name, rows, dayHeaders) {
+   * types/titles are classified the same way as uploaded plans, except where
+   * `types` pins one explicitly. */
+  function buildPlan(name, rows, dayHeaders, types) {
     const headers = (Array.isArray(dayHeaders) && dayHeaders.length
       ? dayHeaders
       : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -319,7 +337,7 @@
       throw new Error("Every day is blank — write at least one workout.");
     }
     const cells = rows.map((r) => headers.map((_, i) => String(r[i] ?? "")));
-    const weeks = buildWeeksFromCells(cells, headers);
+    const weeks = buildWeeksFromCells(cells, headers, types);
     const cleanName = escapeHtml(String(name || "").trim().slice(0, 120)) || "My plan";
     return { name: cleanName, weeks, dayHeaders: headers, htmlDetails: true };
   }
@@ -336,5 +354,8 @@
     return parseMarkdownPlan(trimmed, fallbackName);
   }
 
-  exportsTarget.PlanParser = { parsePlanFile, parseMarkdownPlan, parseJsonPlan, parsePdfItems, buildPlan, escapeHtml };
+  exportsTarget.PlanParser = {
+    parsePlanFile, parseMarkdownPlan, parseJsonPlan, parsePdfItems, buildPlan,
+    escapeHtml, classifyDay, DAY_TYPES, TYPE_TITLES,
+  };
 })(typeof module !== "undefined" && module.exports ? module.exports : window);

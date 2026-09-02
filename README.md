@@ -16,7 +16,10 @@ went to track your progress.
   (see [docs/plan-format.md](docs/plan-format.md)) — or **build a plan
   directly in the app**, one text box per day, with add/duplicate-week
   controls and editing of saved plans. Day types (rest / easy / workout /
-  long run / race) are detected automatically either way.
+  long run / race) are detected automatically either way; detection is a
+  heuristic, so every day in the builder shows what it was read as and lets
+  you **pin a different type** if the guess is wrong. A pinned type wins over
+  detection and stays pinned however you rewrite the day's text.
   (`plans/swap-12-week-marathon.md` ships as an example file to upload.)
 - **Flexible scheduling with Monday-aligned weeks** — create any number of
   schedules from any plan: either **work backward from a goal race** or
@@ -77,6 +80,14 @@ went to track your progress.
   straight into a journal entry; it fills distance and elapsed time so logging
   a run is a click, not typing.
 - **Backup** — export/import all your data as JSON. Mobile friendly.
+- **Accessible** — everything is operable from the keyboard: a reserved-colour
+  focus ring on every control (the design's neon glow couldn't carry focus,
+  since it's the same treatment as hover), day cards and schedule rows that
+  open with Enter, tabs and panels wired as a real tablist, accessible names
+  on every input, a live region so status messages are announced and not just
+  shown, and `prefers-reduced-motion` support. Text meets WCAG AA on every
+  screen. Verified by a browser suite that tabs through the app and measures
+  what actually renders.
 - **NEON//GRID design system** — the UI implements the owner's personal
   design system (cyberpunk/synthwave: near-black canvas, neon accents as
   light sources, Orbitron/Rajdhani/Share Tech Mono type, sharp corners,
@@ -183,6 +194,7 @@ the logs instead of editing JSON on the volume.
 Only the SHA-256 of each token is stored, so a leaked `tokens.json` cannot be
 used to take over an account.
 
-**Limitations to know about:** account deletion isn't implemented yet, and
-sharing still confirms whether an address has an account (the reset flow does
-not). See FEATURES.md for the prioritized list.
+**Limitations to know about:** sharing confirms whether an address has an
+account (the reset flow does not) — acceptable for a group of training
+partners, not for a public service. Scanned or photographed PDFs can't be
+imported; they'd need OCR. See FEATURES.md for the prioritized list.

@@ -20,6 +20,8 @@ const SUITES = [
   ["hardening.js", 4606],
   ["sync-conflicts.js", 4607],
   ["race-week-adherence.js", 4608],
+  ["keyboard-a11y.js", 4609],
+  ["plan-builder.js", 4610],
 ];
 
 let failed = [];
