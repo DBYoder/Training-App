@@ -61,8 +61,8 @@ async function seedJournal(page, fill) {
       /race week/i.test(card), card.replace(/\s+/g, " ").slice(0, 80));
     L.check("it says how far out the race is",
       /Today|In \d+ day/.test(card));
-    L.check("fuelling comes from the plan's own race-day text",
-      card.includes("75–90 g carbs/hour") && card.includes("16–24 oz fluid/hour"),
+    L.check("the plan's own race-day fuelling is surfaced",
+      card.includes("Your plan suggests 75–90 g/h") && card.includes("16–24 oz/h"),
       card.replace(/\s+/g, " ").slice(0, 220));
     L.check("without pace zones it asks for a race result rather than inventing splits",
       card.includes("pace zones") && (await page.locator("#race-week .split").count()) === 0);
@@ -107,6 +107,48 @@ async function seedJournal(page, fill) {
     L.check("a realistic goal is what the splits target",
       realistic.includes("your goal time") && realistic.includes("3:15:00"),
       realistic.replace(/\s+/g, " ").slice(0, 160));
+
+    /* ---------- fuelling is seeded from the plan, then editable ---------- */
+    L.check("fuelling is seeded from the plan's own numbers",
+      (await page.inputValue("#fuel-carbs")) === "75–90" &&
+      (await page.inputValue("#fuel-fluid")) === "16–24",
+      `${await page.inputValue("#fuel-carbs")} / ${await page.inputValue("#fuel-fluid")}`);
+    // 75–90 g/h across the 3:15 target = 244–293 g
+    L.check("the seeded total is derived from the target time",
+      /244–293 g of carbs over 3:15:00/.test(await page.textContent("#fuel-total")),
+      await page.textContent("#fuel-total"));
+
+    await page.fill("#fuel-carbs", "90");   // 90 g/h across 3:15 = 293 g
+    await page.waitForFunction(() =>
+      /\b293 g\b/.test(document.querySelector("#fuel-total").textContent));
+    L.check("the total recomputes live as carbs are edited",
+      /293 g/.test(await page.textContent("#fuel-total")) &&
+      !/244/.test(await page.textContent("#fuel-total")));
+
+    await page.fill("#fuel-fluid", "24 oz cold");
+    await page.fill("#fuel-notes",
+      "Gel 15 min before the gun, then one every 30 min from mile 6. Electrolyte every second aid station.");
+    await page.locator("#checklist-new").focus();
+    await page.waitForTimeout(500);   // let the debounced save land
+    await L.forceSync(page);
+    await page.reload();
+    await page.waitForSelector("#race-week");
+    L.check("edited fuelling survives a reload",
+      (await page.inputValue("#fuel-carbs")) === "90" &&
+      (await page.inputValue("#fuel-fluid")) === "24 oz cold" &&
+      (await page.inputValue("#fuel-notes")).includes("every 30 min from mile 6"),
+      `carbs=${JSON.stringify(await page.inputValue("#fuel-carbs"))} ` +
+      `fluid=${JSON.stringify(await page.inputValue("#fuel-fluid"))} ` +
+      `notes=${JSON.stringify((await page.inputValue("#fuel-notes")).slice(0, 40))}`);
+    L.check("the plan's original suggestion is still shown for reference",
+      (await page.textContent("#race-week")).includes("Your plan suggests 75–90 g/h"));
+
+    await page.click("#fuel-reset");
+    await page.waitForFunction(() =>
+      document.querySelector("#fuel-carbs").value === "75–90");
+    L.check("reset restores the plan's numbers but keeps your notes",
+      (await page.inputValue("#fuel-fluid")) === "16–24" &&
+      (await page.inputValue("#fuel-notes")).includes("every 30 min from mile 6"));
 
     /* ---------- the checklist is the runner's own ---------- */
     const items = () => page.locator("#race-checklist li");
@@ -165,6 +207,9 @@ async function seedJournal(page, fill) {
     await other.waitForSelector("#race-checklist");
     L.check("the checklist syncs to another device",
       (await other.textContent("#race-checklist")).includes("Drop bag at gear check"));
+    L.check("the fuelling plan syncs to another device",
+      (await other.inputValue("#fuel-notes")).includes("every 30 min from mile 6"),
+      await other.inputValue("#fuel-notes"));
 
     // a custom item is escaped, never rendered as markup
     await page.fill("#checklist-new", "<img src=x onerror=window.__pwn=1>bring tape");

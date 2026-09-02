@@ -46,7 +46,8 @@ function emptyState() {
     plans: {}, schedules: {}, journal: {},
     activeScheduleId: null, activeUpdatedAt: null,
     profile: null, // {raceDist, raceTime, goalTime, updatedAt} for pace zones
-    checklists: {}, // race-week ticks, per schedule
+    checklists: {}, // race-week checklist, per schedule
+    fuelling: {},   // race-week fuelling plan, per schedule
   };
 }
 
@@ -483,6 +484,7 @@ function snapshotBase(st) {
     plans: stamps(st.plans),
     schedules: stamps(st.schedules),
     checklists: stamps(st.checklists),
+    fuelling: stamps(st.fuelling),
     journal: Object.fromEntries(
       Object.entries(st.journal || {}).map(([sid, j]) => [sid, stamps(j)])),
   };
@@ -548,6 +550,8 @@ function mergeStates(local, remote, base = null, found = null) {
   }
   merged.checklists = mergeById(local.checklists, remote.checklists,
     baseOf("checklists"), record("checklist"));
+  merged.fuelling = mergeById(local.fuelling, remote.fuelling,
+    baseOf("fuelling"), record("fuelling"));
   merged.profile = ts(remote.profile?.updatedAt) > ts(local.profile?.updatedAt)
     ? remote.profile
     : (local.profile ?? remote.profile ?? null);
@@ -1107,6 +1111,40 @@ const RACE_CHECKLIST_SEED = [
   "Confirm start time, travel and bag drop",
 ];
 const MAX_CHECKLIST_ITEMS = 40;
+const MAX_FUEL_NOTES = 600;
+
+/* The plan's numbers are a starting point, not gospel: what a runner's gut
+ * actually tolerates is personal and learned in training. Stored per
+ * schedule, seeded once from the plan's own race-day text. */
+function fuellingFor(schedId, planFuel, { seed = false } = {}) {
+  const rec = state.fuelling && state.fuelling[schedId];
+  if (rec) return rec;
+  const seeded = { carbs: planFuel.carbs || "", fluid: planFuel.fluid || "", notes: "" };
+  if (seed) saveFuelling(schedId, seeded);
+  return seeded;
+}
+
+function saveFuelling(schedId, patch) {
+  state.fuelling ||= {};
+  const current = state.fuelling[schedId] || { carbs: "", fluid: "", notes: "" };
+  state.fuelling[schedId] = {
+    carbs: String(patch.carbs ?? current.carbs).slice(0, 24).trim(),
+    fluid: String(patch.fluid ?? current.fluid).slice(0, 24).trim(),
+    notes: String(patch.notes ?? current.notes).slice(0, MAX_FUEL_NOTES),
+    updatedAt: new Date().toISOString(),
+  };
+  saveState();
+}
+
+/* "75-90" over 3:12 -> "240–288 g"; a single number gives a single total. */
+function fuelTotal(perHour, seconds) {
+  const nums = String(perHour || "").match(/\d+(?:\.\d+)?/g);
+  if (!nums || !seconds) return null;
+  const hours = seconds / 3600;
+  const totals = nums.slice(0, 2).map((n) => Math.round(Number(n) * hours));
+  return totals.length > 1 && totals[0] !== totals[1]
+    ? `${totals[0]}–${totals[1]}` : String(totals[0]);
+}
 const MAX_CHECKLIST_TEXT = 140;
 
 function newChecklistItem(text, done = false) {
@@ -1148,7 +1186,7 @@ function raceWeekHTML(info) {
   const daysOut = raceIdx - info.todayIdx;
   if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
 
-  const fuel = raceFuelling(info.days[raceIdx]);
+  const planFuel = raceFuelling(info.days[raceIdx]);
   const plan = racePlan();
   const items = checklistFor(info.sched.id, { seed: true });
   const when = daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
@@ -1165,21 +1203,43 @@ function raceWeekHTML(info) {
     </div>`
     : `<p class="hint">Add a recent race result in Settings → pace zones to see goal splits here.</p>`;
 
-  const fuelLine = (fuel.carbs || fuel.fluid)
-    ? `<p class="hint">Your plan says: ${[
-        fuel.carbs && `<strong>${esc(fuel.carbs)} g carbs/hour</strong>`,
-        fuel.fluid && `<strong>${esc(fuel.fluid)} oz fluid/hour</strong>`,
-      ].filter(Boolean).join(" · ")}${
-        plan ? ` — roughly ${Math.round(plan.target / 3600 * parseInt(fuel.carbs || "0", 10))}–${
-          Math.round(plan.target / 3600 * (parseInt((fuel.carbs || "0").split("–")[1] || fuel.carbs || "0", 10)))
-        } g over ${PaceEngine.formatClock(Math.round(plan.target))}.` : ""}</p>`
+  const fuel = fuellingFor(info.sched.id, planFuel, { seed: true });
+  const totalLine = plan && fuel.carbs
+    ? `≈ <strong>${esc(fuelTotal(fuel.carbs, plan.target) || "?")} g</strong> of carbs over ${PaceEngine.formatClock(Math.round(plan.target))}`
     : "";
+  const planSays = (planFuel.carbs || planFuel.fluid)
+    ? `<span class="hint">Your plan suggests ${[
+        planFuel.carbs && `${esc(planFuel.carbs)} g/h`,
+        planFuel.fluid && `${esc(planFuel.fluid)} oz/h`,
+      ].filter(Boolean).join(" · ")}${
+        (fuel.carbs !== planFuel.carbs || fuel.fluid !== planFuel.fluid)
+          ? ` · <a href="#" id="fuel-reset">reset to plan</a>` : ""}</span>`
+    : "";
+
+  const fuelBlock = `
+    <h3 class="checklist-title">// my fuelling</h3>
+    <div class="fuel-grid">
+      <label>Carbs per hour
+        <input type="text" id="fuel-carbs" maxlength="24" inputmode="numeric"
+               value="${esc(fuel.carbs)}" placeholder="e.g. 80 or 75–90">
+      </label>
+      <label>Fluid per hour
+        <input type="text" id="fuel-fluid" maxlength="24"
+               value="${esc(fuel.fluid)}" placeholder="e.g. 20 oz">
+      </label>
+    </div>
+    <p class="hint" id="fuel-total">${totalLine}</p>
+    <label class="notes-label">Your plan for the day — what you'll carry and when
+      <textarea id="fuel-notes" rows="3" maxlength="${MAX_FUEL_NOTES}"
+        placeholder="e.g. gel 15 min before the gun, then every 30 min from mile 6; electrolyte at every second aid station">${esc(fuel.notes)}</textarea>
+    </label>
+    <p class="hint">${planSays}</p>`;
 
   return `
     <details class="race-week" id="race-week" open>
       <summary><span class="race-week-title">🏁 Race week — ${when}</span></summary>
       ${splitRows}
-      ${fuelLine}
+      ${fuelBlock}
       <h3 class="checklist-title">// my checklist</h3>
       <ul class="checklist" id="race-checklist">
         ${items.map((item) => `
@@ -1208,6 +1268,51 @@ function wireRaceWeek(el, info) {
   if (!card) return;
   const schedId = info.sched.id;
   const items = () => checklistFor(schedId);
+
+  /* ---- fuelling: live total while typing, persisted on blur ---- */
+  const plan = racePlan();
+  const carbs = $("#fuel-carbs", card);
+  const fluid = $("#fuel-fluid", card);
+  const notes = $("#fuel-notes", card);
+  const totalEl = $("#fuel-total", card);
+  const refreshTotal = () => {
+    const total = plan && carbs.value.trim()
+      ? fuelTotal(carbs.value, plan.target) : null;
+    totalEl.innerHTML = total
+      ? `≈ <strong>${esc(total)} g</strong> of carbs over ${PaceEngine.formatClock(Math.round(plan.target))}`
+      : "";
+  };
+  // Persist as they type (debounced) rather than only on blur: relying on
+  // focus changes loses an edit if the tab is closed straight after typing.
+  let fuelTimer = null;
+  const persist = () => {
+    clearTimeout(fuelTimer);
+    fuelTimer = setTimeout(() => saveFuelling(schedId, {
+      carbs: carbs.value, fluid: fluid.value, notes: notes.value,
+    }), 300);
+  };
+  [carbs, fluid, notes].forEach((field) => {
+    field.addEventListener("input", () => {
+      if (field === carbs) refreshTotal();
+      persist();
+    });
+    // and immediately on blur, so leaving the field never loses it
+    field.addEventListener("change", () => {
+      clearTimeout(fuelTimer);
+      saveFuelling(schedId, {
+        carbs: carbs.value, fluid: fluid.value, notes: notes.value,
+      });
+    });
+  });
+  const reset = $("#fuel-reset", card);
+  if (reset) {
+    reset.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const planFuel = raceFuelling(info.days[info.len - 1]);
+      saveFuelling(schedId, { carbs: planFuel.carbs || "", fluid: planFuel.fluid || "" });
+      render();
+    });
+  }
 
   $$(".race-check", card).forEach((box) => {
     box.addEventListener("change", () => {

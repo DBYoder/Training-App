@@ -1271,3 +1271,26 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .checklist-add input { flex: 1; min-width: 200px; }
 .checklist input { margin-top: 3px; accent-color: var(--neon-magenta); }
 .checklist li.done label { color: var(--fg-muted); text-decoration: line-through; }
+
+/* ---------- race-week fuelling ---------- */
+
+.fuel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin: 6px 0 4px;
+}
+.fuel-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+#fuel-total { min-height: 1.2em; color: var(--fg-secondary); }
+#fuel-total strong { color: var(--neon-lime); }
+#fuel-reset { color: var(--neon-cyan); }
+.race-week .notes-label { margin-top: 10px; }
