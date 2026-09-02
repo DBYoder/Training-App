@@ -45,38 +45,62 @@ if (vdotFromRace(5000, 5 * 60) !== null || vdotFromRace(42195, 20 * 3600) !== nu
   console.log("FAIL implausible inputs should return null"); failed++;
 } else console.log("PASS implausible inputs return null");
 
-/* ---- duration entry (phone keypads have no colon) ---- */
-const { parseDuration, normalizeDuration } = PaceEngine;
+/* ---- duration entry: a live hh:mm:ss mask (phone keypads have no colon) ---- */
+const { parseDuration, normalizeDuration, maskDuration } = PaceEngine;
+
+const mask = (typed, shown) => {
+  const got = maskDuration(typed);
+  const ok = got === shown;
+  console.log((ok ? "PASS" : "FAIL"), `typing ${JSON.stringify(typed)} shows ${JSON.stringify(got)}`);
+  if (!ok) failed++;
+};
+// the sequence a user sees while typing 012133
+mask("0", "0");
+mask("01", "01");
+mask("012", "0:12");
+mask("0121", "01:21");
+mask("01213", "0:12:13");
+mask("012133", "01:21:33");
+mask("4530", "45:30");
+mask("1:21:33", "1:21:33");    // re-masking an already-formatted value is stable
+mask("0121334", "01:21:33");   // capped at six digits
+mask("", "");
+
 const dur = (input, expected, why) => {
   const got = parseDuration(input);
   const ok = got === expected;
   console.log((ok ? "PASS" : "FAIL"), `duration ${JSON.stringify(input)} -> ${got} (${why})`);
   if (!ok) failed++;
 };
-
-dur("45:30", 2730, "colons still work");
+dur("01:21:33", 4893, "the masked value parses to what it displays");
+dur("45:30", 2730, "mm:ss");
 dur("1:22:00", 4920, "h:mm:ss");
 dur("0:45", 45, "under a minute");
-dur("45", 2700, "1-2 digits stay whole minutes");
-dur("90", 5400, "90 minutes");
+dur("45", 45, "bare digits mean what the mask shows: 45 seconds");
 dur("4530", 2730, "digits only, as typed on a numeric keypad");
-dur("930", 570, "9:30");
-dur("12200", 4920, "1:22:00 without colons");
-dur("102030", 37230, "10:20:30");
+dur("012133", 4893, "the user's example, unformatted");
 dur("45:99", null, "impossible seconds rejected");
-dur("4599", null, "impossible seconds rejected without colons");
+dur("99", null, "60+ seconds cannot be a bare value");
 dur("9999999", null, "absurdly long rejected, not silently accepted");
-dur("4530x", null, "junk rejected");
+dur("4530x", null, "junk is rejected, not silently stripped to 45:30");
 dur("", null, "empty");
 dur("abc", null, "letters");
 
-// the old behaviour turned "4530" into 4530 MINUTES: a plausible-looking
-// 75-hour run that would corrupt pace and weekly mileage
-const wrongOld = 4530 * 60;
-if (parseDuration("4530") === wrongOld) {
+// the original bug: a colon-free "4530" was read as 4530 MINUTES — a
+// plausible-looking 75-hour run that would corrupt pace and weekly mileage
+if (parseDuration("4530") === 4530 * 60) {
   console.log("FAIL duration '4530' regressed to minutes"); failed++;
 } else {
   console.log("PASS duration '4530' is no longer read as 4530 minutes");
+}
+
+// what the mask displays and what gets parsed must never disagree
+for (const digits of ["5", "45", "123", "4530", "01213", "012133", "90000"]) {
+  const shown = maskDuration(digits);
+  const a = parseDuration(digits), b = parseDuration(shown);
+  const ok = a === b;
+  console.log((ok ? "PASS" : "FAIL"), `mask and parse agree for ${JSON.stringify(digits)} (${shown})`);
+  if (!ok) failed++;
 }
 
 const norm = (input, expected) => {
@@ -86,8 +110,8 @@ const norm = (input, expected) => {
   if (!ok) failed++;
 };
 norm("4530", "45:30");
-norm("12200", "1:22:00");
-norm("45", "45:00");
+norm("012133", "1:21:33");
+norm("45", "0:45");
 norm("nonsense", null);
 
 process.exit(failed ? 1 : 0);

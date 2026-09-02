@@ -2399,7 +2399,7 @@ function openDay(i) {
         </label>
         <label>Total time
           <input type="text" name="duration" inputmode="numeric" pattern="[0-9:]*"
-                 value="${esc(entry.duration ?? "")}" placeholder="45:30 — or just 4530">
+                 value="${esc(entry.duration ?? "")}" placeholder="type digits: 4530 → 45:30">
         </label>
         <label>Effort (RPE 1–10)
           <select name="rpe">${rpeOptions}</select>
@@ -2435,7 +2435,7 @@ function openDay(i) {
           </label>
           <label>Time<span class="second-time-req"></span>
             <input type="text" name="secondDuration" inputmode="numeric" pattern="[0-9:]*"
-                   value="${esc(existingSecond?.duration ?? "")}" placeholder="45:00 — or just 4500">
+                   value="${esc(existingSecond?.duration ?? "")}" placeholder="type digits: 4500 → 45:00">
           </label>
           <label>Notes
             <input type="text" name="secondNotes" maxlength="300"
@@ -2486,10 +2486,20 @@ function openDay(i) {
     syncSecondFields();
     updatePace();
   });
-  // echo back how a colon-free entry was understood, so "4530" visibly
-  // becomes "45:30" rather than being silently misread
+  // Colons appear as you type, so the field always shows what will be saved
+  // (typing 012133 gives 01:21:33). Phone keypads have no colon key.
   $$('#journal-form input[name="duration"], #journal-form input[name="secondDuration"]')
     .forEach((input) => {
+      input.addEventListener("input", () => {
+        const atEnd = input.selectionStart === input.value.length;
+        const masked = PaceEngine.maskDuration(input.value);
+        if (masked !== input.value) {
+          input.value = masked;
+          // typing is almost always an append; keep the caret with it
+          if (atEnd) input.setSelectionRange(masked.length, masked.length);
+        }
+        updatePace();
+      });
       input.addEventListener("blur", () => {
         const tidy = PaceEngine.normalizeDuration(input.value);
         if (tidy && tidy !== input.value.trim()) {
