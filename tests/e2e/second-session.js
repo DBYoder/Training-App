@@ -1,9 +1,10 @@
-const { chromium } = require("playwright-core");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const L = require("./lib.js");
 
-const BASE = "http://localhost:4582";
-const SHOTS = "/tmp/claude-0/-home-user-Training-App/ce9494e5-3079-5748-a9c7-f903189120a3/scratchpad";
-const SWAP_MD = "/home/user/Training-App/plans/swap-12-week-marathon.md";
+const SHOTS = process.env.SHOTS || fs.mkdtempSync(path.join(os.tmpdir(), "e2e-shots-"));
+const SWAP_MD = L.SWAP_MD;
 
 /* ~6.22 mi over 50 minutes (same generator as the GPX suite). */
 function makeGpx(startIso) {
@@ -18,7 +19,10 @@ function makeGpx(startIso) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  const server = await L.startServer({ port: Number(process.env.PORT) || 4603 });
+  const BASE = server.base;
+  const browser = await L.launch();
+  try {
   const page = await (await browser.newContext({ viewport: { width: 900, height: 1200 } })).newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
@@ -185,5 +189,8 @@ function makeGpx(startIso) {
 
   if (errors.length) throw new Error("Browser errors:\n" + errors.join("\n"));
   console.log("\nALL SECOND-SESSION E2E CHECKS PASSED");
-  await browser.close();
+  } finally {
+    await browser.close();
+    server.stop();
+  }
 })().catch((e) => { console.error("E2E FAILED:", e.message); process.exit(1); });

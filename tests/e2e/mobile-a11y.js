@@ -1,10 +1,11 @@
 /* Measures rendered text size + contrast on a phone viewport, then captures
  * the key screens. Contrast is computed from *composited* colors, so it
  * reflects what a runner actually sees. */
-const { chromium } = require("playwright-core");
+const fs = require("fs");
+const os = require("os");
+const L = require("./lib.js");
 
-const BASE = process.env.BASE || "http://localhost:4583";
-const SHOTS = process.env.SHOTS || "/tmp";
+const SHOTS = process.env.SHOTS || fs.mkdtempSync(require("path").join(os.tmpdir(), "e2e-shots-"));
 const SWAP_MD = require("path").join(__dirname, "..", "..", "plans", "swap-12-week-marathon.md");
 
 const AUDIT = `(() => {
@@ -48,7 +49,11 @@ const AUDIT = `(() => {
 })()`;
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  const server = await L.startServer({ port: Number(process.env.PORT) || 4604 });
+  const BASE = server.base;
+  const browser = await L.launch();
+  let failures = 0;
+  try {
   // iPhone 14-ish
   const ctx = await browser.newContext({
     viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
@@ -131,6 +136,10 @@ const AUDIT = `(() => {
 
   console.log(`\nsmallest rendered text anywhere: ${minPx}px`);
   console.log(worstAll.length ? `\n${worstAll.length} TOTAL AA FAILURES` : "\nALL TEXT PASSES WCAG AA ✓");
-  await browser.close();
-  process.exit(worstAll.length || tooSmall.length ? 1 : 0);
+  failures = worstAll.length + tooSmall.length;
+  } finally {
+    await browser.close();
+    server.stop();
+  }
+  process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error("FAILED:", e.message); process.exit(1); });

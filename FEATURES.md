@@ -31,10 +31,10 @@ between this being your training app and being your group's training app.
 
 | # | Item | Why now | Effort |
 |---|------|---------|--------|
-| 1 | **Automated volume backups** | The single unrecoverable failure. Every account, plan and journal lives on one Railway volume with no snapshot. A volume loss or a bad `DATA_DIR` change destroys a training block mid-cycle with no way back. Nightly tarball to object storage (or a scheduled job that commits an encrypted dump) fixes it. | S |
+| 1 | ~~**Automated volume backups**~~ | ✅ **Done.** Scheduled on-volume snapshots with rotation, a token-gated `GET /api/admin/backup` for off-box pulls, a nightly GitHub Action keeping 90-day artifacts, and a restore CLI. Verified by restoring a simulated volume wipe. | S |
 | 2 | **Password reset** | Today a forgotten password means an admin hand-editing JSON on the volume. That is not something you can ask a training partner to accept. Needs a mail provider (Resend/Postmark, free at this volume) plus a token flow. Unblocks #3. | M |
 | 3 | **Email verification** | Sharing targets accounts *by email address*. An unverified signup can squat an address and receive plans meant for someone else. Same mail provider as #2, so do them together. | S |
-| 4 | **Restore the e2e suites + CI** | Six of the eight suites I wrote (multi-user isolation, Monday alignment/PDF, onboarding, plan builder, share/export, pace zones) were lost when the scratch directory cleared — only `second-session` and `mobile-a11y` are in the repo. Nothing runs on push. The app's riskiest logic (auth isolation, sanitisation of shared plans, schedule maths) currently has no standing guard. | M |
+| 4 | ~~**Restore the e2e suites + CI**~~ | ✅ **Done.** Rebuilt as `accounts-and-sharing` (isolation, sync, hostile-share sanitisation) and `scheduling` (alignment, truncation, swaps, md/PDF import) on a shared `lib.js` that boots a throwaway server per suite; all four run via `npm run test:e2e`, and GitHub Actions runs unit + browser suites on every push. | M |
 
 ## P1 — trust and correctness
 

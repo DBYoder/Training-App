@@ -7,7 +7,8 @@
     "start": "node server.js",
     "backup": "node backup.js",
     "backup:list": "node backup.js --list",
-    "test": "node tests/paces.test.js && node tests/backup.test.js"
+    "test": "node tests/paces.test.js && node tests/backup.test.js",
+    "test:e2e": "node tests/e2e/run-all.js"
   },
   "engines": {
     "node": ">=18"

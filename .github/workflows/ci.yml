@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Syntax check every source file
+        run: |
+          set -e
+          for f in server.js backup.js js/*.js tests/*.js tests/e2e/*.js; do
+            node --check "$f"
+          done
+      - name: Unit tests (VDOT pace model, backup/restore)
+        run: npm test
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # the app itself has no dependencies; playwright is test-only
+      - name: Install Playwright + Chromium
+        run: |
+          npm install --no-save playwright-core playwright
+          npx playwright install --with-deps chromium
+      - name: Run browser suites
+        env:
+          # let lib.js find the browser playwright just installed
+          CHROMIUM_PATH: ""
+        run: |
+          # resolve the chromium playwright downloaded, then hand it to lib.js
+          BROWSER=$(node -e "console.log(require('playwright').chromium.executablePath())")
+          echo "using $BROWSER"
+          CHROMIUM_PATH="$BROWSER" node tests/e2e/run-all.js
