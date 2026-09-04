@@ -15,16 +15,44 @@ jobs:
   pull:
     runs-on: ubuntu-latest
     steps:
-      - name: Pull snapshot
+      # This workflow is opt-in: it can't do anything until someone sets the
+      # two secrets. Failing the run in that state would paint the repo red
+      # every night forever, and a nightly alarm that is always ringing is one
+      # nobody reads — which is exactly the alarm you need working the night a
+      # real backup breaks. So an unconfigured repo skips cleanly and says so,
+      # and only a configured-but-broken pull fails.
+      - name: Check configuration
+        id: check
         env:
           APP_URL: ${{ secrets.APP_URL }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${APP_URL:-}" ] || [ -z "${ADMIN_TOKEN:-}" ]; then
-            echo "::error::APP_URL and ADMIN_TOKEN repository secrets must be set"
-            exit 1
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Off-box backups are not set up: add the APP_URL and ADMIN_TOKEN repository secrets to enable them. Skipping."
+            {
+              echo "### Off-box backup skipped"
+              echo
+              echo "No snapshot was pulled because this repository has no backup secrets set."
+              echo "To turn nightly off-box backups on, add both repository secrets:"
+              echo
+              echo "| Secret | Value |"
+              echo "| --- | --- |"
+              echo '| `APP_URL` | your deployed URL, no trailing slash |'
+              echo '| `ADMIN_TOKEN` | the same value set on the Railway service |'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Pull snapshot
+        if: steps.check.outputs.configured == 'true'
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
           mkdir -p out
           code=$(curl -sS --fail-with-body \
             -H "Authorization: Bearer ${ADMIN_TOKEN}" \
@@ -43,6 +71,7 @@ jobs:
           rm -f out/headers.txt
 
       - name: Store snapshot
+        if: steps.check.outputs.configured == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: backup-${{ github.run_id }}

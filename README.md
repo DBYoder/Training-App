@@ -166,7 +166,9 @@ failure this app has. Three layers guard it:
    `GET /api/admin/backup` (Bearer auth; the route 404s when the variable is
    unset). `.github/workflows/backup.yml` pulls one nightly and keeps it as a
    GitHub artifact for 90 days — set the `APP_URL` and `ADMIN_TOKEN`
-   repository secrets to turn it on.
+   repository secrets to turn it on. Until both are set the nightly run skips
+   with a notice rather than failing, so the job only goes red once it is
+   actually configured and a real pull breaks.
 3. **Manual** — `npm run backup`, `npm run backup:list`.
 
 Restore into a volume with:
