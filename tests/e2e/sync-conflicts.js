@@ -35,6 +35,7 @@ const journalDay = async (page, { distance, notes }) => {
     const b = await ctxB.newPage();
     errors.push(...L.trackErrors(b, "B"));
     await L.login(b, server.base, "conflict@example.com");
+    await L.waitForSchedule(b);
     await b.waitForSelector("#tab-today .day-card");
     await L.forceSync(b);
     L.check("both devices start from the same synced state", true);

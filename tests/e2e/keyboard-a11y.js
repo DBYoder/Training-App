@@ -184,6 +184,8 @@ async function focusRing(page, selector) {
     });
     const calm = await motionCtx.newPage();
     await L.login(calm, server.base, "a11y@example.com");
+    await L.waitForSchedule(calm);
+    await calm.click('#tabs button[data-tab="today"]');
     await calm.waitForSelector("#tab-today .day-card");
     const durations = await calm.evaluate(() => {
       const out = [];

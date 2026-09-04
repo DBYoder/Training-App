@@ -114,6 +114,22 @@ async function login(page, base, email, password = "password123") {
   await page.click("#auth-submit");
 }
 
+/** Wait until a signed-in page has an active schedule to show.
+ *
+ * A browser context that has never seen this account starts with an empty
+ * local cache, so the app opens on Settings and only switches to Today once
+ * the first sync lands. Waiting on Today's contents directly is therefore a
+ * race against a network round-trip — it passes on an idle machine and times
+ * out on a loaded CI runner. The countdown chip is the app's own "there is a
+ * schedule" signal, so wait for that, then pick the tab you want. */
+async function waitForSchedule(page, { timeout = 30000 } = {}) {
+  await page.waitForSelector("#app-main:not([hidden])", { timeout });
+  await page.waitForFunction(() => {
+    const chip = document.querySelector("#countdown-chip");
+    return chip && !chip.hidden && chip.textContent.trim().length > 0;
+  }, null, { timeout });
+}
+
 /** Upload a plan inside the schedule form and create a schedule from it. */
 async function createSchedule(page, { file = SWAP_MD, anchor, mode = "race", name } = {}) {
   await page.setInputFiles(".schedule-form .form-plan-file", file);
@@ -158,5 +174,5 @@ function check(label, condition, detail = "") {
 
 module.exports = {
   REPO, SWAP_MD, launch, startServer, trackErrors, iso, upcoming,
-  register, login, createSchedule, openDay, forceSync, check,
+  register, login, waitForSchedule, createSchedule, openDay, forceSync, check,
 };

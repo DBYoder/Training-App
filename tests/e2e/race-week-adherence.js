@@ -232,6 +232,7 @@ async function seedJournal(page, fill) {
     const other = await ctx2.newPage();
     errors.push(...L.trackErrors(other, "other"));
     await L.login(other, server.base, "raceweek@example.com");
+    await L.waitForSchedule(other);
     await other.click('#tabs button[data-tab="race"]');
     await other.waitForSelector("#race-checklist");
     L.check("the checklist syncs to another device",
