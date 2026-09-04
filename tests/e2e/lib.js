@@ -82,7 +82,13 @@ function trackErrors(page, tag, { allowStatus = [401, 404, 409] } = {}) {
 const iso = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/** The next given weekday (0=Sun) at least `minDays` out. */
+/** The next given weekday (0=Sun) at least `minDays` out.
+ *
+ * Careful: the result is minDays..minDays+6 days out, not minDays. A suite
+ * that needs the date inside a bounded window (race week is 7 days) must pick
+ * minDays so the whole 7-day spread still lands in it — otherwise it passes on
+ * some weekdays and fails on others. Assert the window in the suite rather
+ * than trusting the arithmetic. */
 function upcoming(weekday, minDays = 32) {
   const d = new Date();
   d.setDate(d.getDate() + minDays);

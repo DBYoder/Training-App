@@ -49,8 +49,20 @@ async function seedJournal(page, fill) {
     const page = await (await browser.newContext({ viewport: { width: 900, height: 1100 } })).newPage();
     errors.push(...L.trackErrors(page, "race"));
 
-    /* the race is the coming Sunday, so today sits inside race week */
-    const race = L.upcoming(0, 3);
+    /* The race is the coming Sunday, so today sits inside race week.
+     *
+     * minDays must be 1, not 3: from a Friday or Saturday, "the next Sunday at
+     * least 3 days out" skips a week and lands 8-9 days away, outside the
+     * 7-day window, and the card under test never renders. At 1 the answer is
+     * 1-7 days out from every weekday, so this suite doesn't depend on which
+     * day CI happens to run. */
+    const race = L.upcoming(0, 1);
+    const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const daysOut = Math.round((midnight(race) - midnight(new Date())) / 86400000);
+    L.check("the fixture really does put today inside race week",
+      daysOut >= 0 && daysOut <= 7,
+      `race is ${daysOut} days out — everything below tests a card that won't render`);
+
     await L.register(page, server.base, "raceweek@example.com");
     await L.createSchedule(page, { anchor: race });
 
