@@ -82,7 +82,13 @@ function trackErrors(page, tag, { allowStatus = [401, 404, 409] } = {}) {
 const iso = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/** The next given weekday (0=Sun) at least `minDays` out. */
+/** The next given weekday (0=Sun) at least `minDays` out.
+ *
+ * Careful: the result is minDays..minDays+6 days out, not minDays. A suite
+ * that needs the date inside a bounded window (race week is 7 days) must pick
+ * minDays so the whole 7-day spread still lands in it — otherwise it passes on
+ * some weekdays and fails on others. Assert the window in the suite rather
+ * than trusting the arithmetic. */
 function upcoming(weekday, minDays = 32) {
   const d = new Date();
   d.setDate(d.getDate() + minDays);
@@ -106,6 +112,22 @@ async function login(page, base, email, password = "password123") {
   await page.fill('#auth-form input[name="email"]', email);
   await page.fill('#auth-form input[name="password"]', password);
   await page.click("#auth-submit");
+}
+
+/** Wait until a signed-in page has an active schedule to show.
+ *
+ * A browser context that has never seen this account starts with an empty
+ * local cache, so the app opens on Settings and only switches to Today once
+ * the first sync lands. Waiting on Today's contents directly is therefore a
+ * race against a network round-trip — it passes on an idle machine and times
+ * out on a loaded CI runner. The countdown chip is the app's own "there is a
+ * schedule" signal, so wait for that, then pick the tab you want. */
+async function waitForSchedule(page, { timeout = 30000 } = {}) {
+  await page.waitForSelector("#app-main:not([hidden])", { timeout });
+  await page.waitForFunction(() => {
+    const chip = document.querySelector("#countdown-chip");
+    return chip && !chip.hidden && chip.textContent.trim().length > 0;
+  }, null, { timeout });
 }
 
 /** Upload a plan inside the schedule form and create a schedule from it. */
@@ -152,5 +174,5 @@ function check(label, condition, detail = "") {
 
 module.exports = {
   REPO, SWAP_MD, launch, startServer, trackErrors, iso, upcoming,
-  register, login, createSchedule, openDay, forceSync, check,
+  register, login, waitForSchedule, createSchedule, openDay, forceSync, check,
 };

@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#050508">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="css/styles.css?v=23">
+  <link rel="stylesheet" href="css/styles.css?v=25">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23050508%22/><text x=%2250%22 y=%2272%22 font-size=%2264%22 font-family=%22monospace%22 font-weight=%22bold%22 fill=%22%2300f5ff%22 text-anchor=%22middle%22>//</text></svg>">
 </head>
 <body>
@@ -17,12 +17,19 @@
       <h1>MARATHON<span class="slash">//</span>TRAINER</h1>
       <span id="countdown-chip" class="countdown-chip" hidden></span>
     </div>
-    <nav id="tabs" class="tabs" role="tablist" hidden>
-      <button data-tab="today" class="active" role="tab" aria-selected="true">Today</button>
-      <button data-tab="schedule" role="tab" aria-selected="false">Schedule</button>
-      <button data-tab="progress" role="tab" aria-selected="false">Progress</button>
-      <button data-tab="plans" role="tab" aria-selected="false">Plans</button>
-      <button data-tab="settings" role="tab" aria-selected="false">Settings</button>
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Sections" hidden>
+      <button id="tabbtn-today" data-tab="today" class="active" role="tab"
+              aria-selected="true" aria-controls="tab-today">Today</button>
+      <button id="tabbtn-schedule" data-tab="schedule" role="tab"
+              aria-selected="false" aria-controls="tab-schedule">Schedule</button>
+      <button id="tabbtn-progress" data-tab="progress" role="tab"
+              aria-selected="false" aria-controls="tab-progress">Progress</button>
+      <button id="tabbtn-race" data-tab="race" role="tab"
+              aria-selected="false" aria-controls="tab-race" hidden>Race</button>
+      <button id="tabbtn-plans" data-tab="plans" role="tab"
+              aria-selected="false" aria-controls="tab-plans">Plans</button>
+      <button id="tabbtn-settings" data-tab="settings" role="tab"
+              aria-selected="false" aria-controls="tab-settings">Settings</button>
     </nav>
   </header>
 
@@ -55,13 +62,25 @@
 
     <!-- Main app -->
     <div id="app-main" hidden>
-      <section id="tab-today" class="tab-panel"></section>
-      <section id="tab-schedule" class="tab-panel" hidden></section>
-      <section id="tab-progress" class="tab-panel" hidden></section>
-      <section id="tab-plans" class="tab-panel" hidden></section>
-      <section id="tab-settings" class="tab-panel" hidden></section>
+      <section id="tab-today" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-today" tabindex="0"></section>
+      <section id="tab-schedule" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-schedule" tabindex="0" hidden></section>
+      <section id="tab-progress" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-progress" tabindex="0" hidden></section>
+      <section id="tab-race" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-race" tabindex="0" hidden></section>
+      <section id="tab-plans" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-plans" tabindex="0" hidden></section>
+      <section id="tab-settings" class="tab-panel" role="tabpanel"
+               aria-labelledby="tabbtn-settings" tabindex="0" hidden></section>
     </div>
   </main>
+
+  <!-- Status messages are rendered inside panels that get replaced wholesale,
+       so a live region declared alongside them would never announce. This one
+       persists for the life of the page and app.js writes into it. -->
+  <p id="a11y-status" class="visually-hidden" role="status" aria-live="polite"></p>
 
   <!-- Day detail + journal modal -->
   <dialog id="day-modal" aria-labelledby="modal-title">
@@ -73,9 +92,9 @@
     <p>marathon//trainer — your data syncs to your account</p>
   </footer>
 
-  <script src="js/plan.js?v=23"></script>
-  <script src="js/planParser.js?v=23"></script>
-  <script src="js/paces.js?v=23"></script>
-  <script src="js/app.js?v=23"></script>
+  <script src="js/plan.js?v=25"></script>
+  <script src="js/planParser.js?v=25"></script>
+  <script src="js/paces.js?v=25"></script>
+  <script src="js/app.js?v=25"></script>
 </body>
 </html>

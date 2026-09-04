@@ -54,6 +54,7 @@ const LIB = "#tab-plans .plan-list:not(#shares-list) .plan-row";
     const b = await ctxB.newPage();
     errors.push(...L.trackErrors(b, "B"));
     await L.login(b, server.base, "a@example.com");
+    await L.waitForSchedule(b);
     await b.waitForSelector("#tab-today .day-card");
     L.check("a second device sees the same schedule and journal",
       (await b.textContent("#tab-today .day-card")).includes("9 mi"));

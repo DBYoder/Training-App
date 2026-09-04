@@ -16,7 +16,10 @@ went to track your progress.
   (see [docs/plan-format.md](docs/plan-format.md)) — or **build a plan
   directly in the app**, one text box per day, with add/duplicate-week
   controls and editing of saved plans. Day types (rest / easy / workout /
-  long run / race) are detected automatically either way.
+  long run / race) are detected automatically either way; detection is a
+  heuristic, so every day in the builder shows what it was read as and lets
+  you **pin a different type** if the guess is wrong. A pinned type wins over
+  detection and stays pinned however you rewrite the day's text.
   (`plans/swap-12-week-marathon.md` ships as an example file to upload.)
 - **Flexible scheduling with Monday-aligned weeks** — create any number of
   schedules from any plan: either **work backward from a goal race** or
@@ -49,9 +52,14 @@ went to track your progress.
   chart with the plan's own range behind it, an average-pace trend, and a
   week-by-week table. Rest days never count against you, and an unlogged
   today doesn't break a streak.
-- **Race week** — inside the final seven days the Today tab leads with
-  goal-pace splits (5K through the finish) computed from your own race
-  result, plus **your own fuelling plan and checklist**. Both are seeded
+- **Race tab** — race planning has its own tab, available for the whole
+  training block rather than only in the final week: goal-pace splits (5K
+  through the finish) computed from your own race result, plus **your own
+  fuelling plan and checklist**. Fuelling and pacing are things you rehearse
+  on long runs, so the page is there from day one and only changes its
+  framing as race day approaches; during the final seven days the Today tab
+  shows a banner linking to it. The tab hides itself for start-date
+  schedules, which have no race day. Both plans are seeded
   from your training plan (its carbs/hour and fluid/hour, a few starter
   checklist items) and then fully yours: change the numbers, write what
   you'll carry and when, add or delete any checklist item. The carb total
@@ -77,6 +85,14 @@ went to track your progress.
   straight into a journal entry; it fills distance and elapsed time so logging
   a run is a click, not typing.
 - **Backup** — export/import all your data as JSON. Mobile friendly.
+- **Accessible** — everything is operable from the keyboard: a reserved-colour
+  focus ring on every control (the design's neon glow couldn't carry focus,
+  since it's the same treatment as hover), day cards and schedule rows that
+  open with Enter, tabs and panels wired as a real tablist, accessible names
+  on every input, a live region so status messages are announced and not just
+  shown, and `prefers-reduced-motion` support. Text meets WCAG AA on every
+  screen. Verified by a browser suite that tabs through the app and measures
+  what actually renders.
 - **NEON//GRID design system** — the UI implements the owner's personal
   design system (cyberpunk/synthwave: near-black canvas, neon accents as
   light sources, Orbitron/Rajdhani/Share Tech Mono type, sharp corners,
@@ -150,7 +166,9 @@ failure this app has. Three layers guard it:
    `GET /api/admin/backup` (Bearer auth; the route 404s when the variable is
    unset). `.github/workflows/backup.yml` pulls one nightly and keeps it as a
    GitHub artifact for 90 days — set the `APP_URL` and `ADMIN_TOKEN`
-   repository secrets to turn it on.
+   repository secrets to turn it on. Until both are set the nightly run skips
+   with a notice rather than failing, so the job only goes red once it is
+   actually configured and a real pull breaks.
 3. **Manual** — `npm run backup`, `npm run backup:list`.
 
 Restore into a volume with:
@@ -183,6 +201,7 @@ the logs instead of editing JSON on the volume.
 Only the SHA-256 of each token is stored, so a leaked `tokens.json` cannot be
 used to take over an account.
 
-**Limitations to know about:** account deletion isn't implemented yet, and
-sharing still confirms whether an address has an account (the reset flow does
-not). See FEATURES.md for the prioritized list.
+**Limitations to know about:** sharing confirms whether an address has an
+account (the reset flow does not) — acceptable for a group of training
+partners, not for a public service. Scanned or photographed PDFs can't be
+imported; they'd need OCR. See FEATURES.md for the prioritized list.

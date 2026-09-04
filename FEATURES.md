@@ -18,6 +18,10 @@
 - Optional second session per day (double / x-train / strength), with
   cross-training measured in time rather than miles
 - Mobile legibility pass: WCAG AA across every screen, 1:1 chart labels
+- Keyboard and screen-reader pass: focus rings, tablist semantics, live
+  status announcements, `prefers-reduced-motion`
+- Per-day type override in the plan builder, so a misread day is a dropdown
+  away from correct
 
 ---
 
@@ -51,8 +55,9 @@ between this being your training app and being your group's training app.
 | 9 | ~~**Race-week checklist**~~ | ✅ **Done.** In the last 7 days the Today tab leads with goal-pace splits (5K→finish) from the runner's own VDOT, the plan's own fuelling numbers plus the total they imply for the predicted finish, plus a fuelling plan and checklist the runner owns — both seeded from the plan, then freely editable (carb totals recompute live; "reset to plan" restores the original numbers). An over-ambitious goal is flagged and never drives the splits. | M |
 | 10 | ~~**Adherence / streak view**~~ | ✅ **Done.** Progress gains plan-adherence % (completed ÷ scheduled runs elapsed, rest days excluded) and a current/best day streak where rest days carry the streak and an unlogged today never breaks it. | S |
 | 11 | **Full Strava integration** | Gated on you registering a Strava API app, and on their athlete-capacity review before partners can connect. GPX import covers the case today. | L |
-| 12 | **Accessibility beyond contrast** | Contrast and sizing are done; keyboard focus order, visible focus rings, screen-reader labels and `prefers-reduced-motion` (the design leans on glow and transitions) are not. | M |
-| 13 | **Plan-import robustness** | Scanned/photo PDFs fail (needs OCR); day-type classification is heuristic and disagreed with hand-tagging on 2 of 84 days. Let users correct a day's type in the builder instead of chasing parser accuracy. | S |
+| 19 | ~~**Race planning as its own tab**~~ | ✅ **Done.** Your idea, and it fixed a real flaw: splits, fuelling and the checklist only existed inside the final 7 days — the one week you can no longer act on what they tell you. They now live on a Race tab available for the whole block, framed as something to rehearse until race week arrives. Today keeps a banner that links there rather than duplicating the fields. The tab hides itself for start-date schedules, which have no race day. | M |
+| 12 | ~~**Accessibility beyond contrast**~~ | ✅ **Done.** A reserved-colour focus ring on every control (glow alone couldn't carry focus — it's the same treatment as hover), tabs/panels wired as a real tablist, accessible names everywhere, one persistent live region so status messages are heard and not just seen, and `prefers-reduced-motion` honoured. Measured by tabbing through a real browser, which found three unlabeled inputs and a focus ring that never rendered. | M |
+| 13 | ~~**Plan-import robustness**~~ | ✅ **Done.** Every day in the builder shows the type the parser detected and offers a dropdown to pin a different one. A pin beats detection, survives rewriting the day's text, and round-trips through save/sync/reload; clearing it hands the day back to the classifier. Opening an uploaded or shared plan pins only the days whose stored type disagrees with detection, so saving one unchanged can't silently reclassify it. Scanned/photo PDFs still need OCR and remain out of scope. | S |
 
 ## P3 — only if it grows
 
@@ -68,12 +73,15 @@ between this being your training app and being your group's training app.
 
 ## Suggested next move
 
-P0 and P1 are complete (#8, sync conflicts, shipped: each device remembers
-the state at its last sync, so a merge can tell a real conflict from a
-one-sided change, and the replaced edit is shown with a one-click restore).
+P0, P1 and P2 are complete except #11. **Strava** is the only P2 item left,
+and it needs two things from you before any code helps: register a Strava
+API app (client ID + secret), and submit it for their athlete-capacity
+review — until that clears, a partner app is capped at a single-digit number
+of connected athletes. GPX import covers the case in the meantime.
 
-P2 continues with accessibility beyond contrast (#12) and plan-import
-robustness (#13). #11 Strava still waits on you registering an API app.
+After that, nothing on this list is worth doing on a schedule. P3 items are
+all triggered by growth, not by time: revisit them when the user count or
+the size of a state blob actually crosses the trigger in the table.
 
 To switch email from "logged to the console" to real delivery, set
 `MAIL_PROVIDER=resend`, `RESEND_API_KEY`, `MAIL_FROM` and `APP_URL` on the

@@ -49,13 +49,39 @@ async function seedJournal(page, fill) {
     const page = await (await browser.newContext({ viewport: { width: 900, height: 1100 } })).newPage();
     errors.push(...L.trackErrors(page, "race"));
 
-    /* the race is the coming Sunday, so today sits inside race week */
-    const race = L.upcoming(0, 3);
+    /* The race is the coming Sunday, so today sits inside race week.
+     *
+     * minDays must be 1, not 3: from a Friday or Saturday, "the next Sunday at
+     * least 3 days out" skips a week and lands 8-9 days away, outside the
+     * 7-day window, and the card under test never renders. At 1 the answer is
+     * 1-7 days out from every weekday, so this suite doesn't depend on which
+     * day CI happens to run. */
+    const race = L.upcoming(0, 1);
+    const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const daysOut = Math.round((midnight(race) - midnight(new Date())) / 86400000);
+    L.check("the fixture really does put today inside race week",
+      daysOut >= 0 && daysOut <= 7,
+      `race is ${daysOut} days out — everything below tests a card that won't render`);
+
     await L.register(page, server.base, "raceweek@example.com");
     await L.createSchedule(page, { anchor: race });
 
-    /* ---------- race week appears, with the plan's own guidance ---------- */
+    /* ---------- Today points at the race plan rather than duplicating it ---------- */
+    await page.waitForSelector(".race-banner");
+    const banner = await page.textContent(".race-banner");
+    L.check("Today leads with a race-week banner",
+      /race week/i.test(banner) && /Today|in \d+ day/.test(banner),
+      banner.replace(/\s+/g, " ").slice(0, 120));
+    L.check("the banner points at the Race tab and doesn't repeat its fields",
+      banner.includes("Race tab") && (await page.locator("#fuel-carbs").count()) === 0);
+
+    await page.click("#tab-today .goto-race");
     await page.waitForSelector("#race-week");
+    L.check("the banner link opens the Race tab",
+      await page.locator('#tabs button[data-tab="race"]').evaluate(
+        (b) => b.getAttribute("aria-selected") === "true"));
+
+    /* ---------- the race plan, with the plan's own guidance ---------- */
     const card = await page.textContent("#race-week");
     L.check("the race-week card appears in the final week",
       /race week/i.test(card), card.replace(/\s+/g, " ").slice(0, 80));
@@ -74,7 +100,7 @@ async function seedJournal(page, fill) {
     await page.fill("#pace-time", "19:57");          // the canonical VDOT 50
     await page.click("#pace-save");
     await page.waitForSelector("#pace-card .pace-chip");
-    await page.click('#tabs button[data-tab="today"]');
+    await page.click('#tabs button[data-tab="race"]');
     await page.waitForSelector("#race-week .split");
     const splits = await page.locator("#race-week .split").allTextContents();
     L.check("six goal-pace splits are shown", splits.length === 6, splits.join(" | "));
@@ -89,7 +115,7 @@ async function seedJournal(page, fill) {
     await page.click('#tabs button[data-tab="settings"]');
     await page.fill("#pace-goal", "2:45:00");
     await page.click("#pace-save");
-    await page.click('#tabs button[data-tab="today"]');
+    await page.click('#tabs button[data-tab="race"]');
     await page.waitForSelector("#race-week .split");
     const optimistic = await page.textContent("#race-week");
     L.check("an unrealistic goal doesn't drive the splits",
@@ -101,7 +127,7 @@ async function seedJournal(page, fill) {
     await page.click('#tabs button[data-tab="settings"]');
     await page.fill("#pace-goal", "3:15:00");
     await page.click("#pace-save");
-    await page.click('#tabs button[data-tab="today"]');
+    await page.click('#tabs button[data-tab="race"]');
     await page.waitForSelector("#race-week .split");
     const realistic = await page.textContent("#race-week");
     L.check("a realistic goal is what the splits target",
@@ -132,6 +158,7 @@ async function seedJournal(page, fill) {
     await page.waitForTimeout(500);   // let the debounced save land
     await L.forceSync(page);
     await page.reload();
+    await page.click('#tabs button[data-tab="race"]');
     await page.waitForSelector("#race-week");
     L.check("edited fuelling survives a reload",
       (await page.inputValue("#fuel-carbs")) === "90" &&
@@ -189,6 +216,7 @@ async function seedJournal(page, fill) {
 
     await L.forceSync(page);
     await page.reload();
+    await page.click('#tabs button[data-tab="race"]');
     await page.waitForSelector("#race-week");
     const afterReload = await page.textContent("#race-checklist");
     L.check("the custom list survives a reload",
@@ -204,6 +232,8 @@ async function seedJournal(page, fill) {
     const other = await ctx2.newPage();
     errors.push(...L.trackErrors(other, "other"));
     await L.login(other, server.base, "raceweek@example.com");
+    await L.waitForSchedule(other);
+    await other.click('#tabs button[data-tab="race"]');
     await other.waitForSelector("#race-checklist");
     L.check("the checklist syncs to another device",
       (await other.textContent("#race-checklist")).includes("Drop bag at gear check"));

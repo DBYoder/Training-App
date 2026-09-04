@@ -125,9 +125,55 @@
   --series-1:     #00a0a9;
   --gridline:     #1c1c2a;
   --baseline:     #2a2a3a;
+
+  /* Focus. NEON//GRID signals state with glow, but glow alone can't carry
+     keyboard focus: it's the same treatment as :hover, and a glow on an
+     already-glowing control is invisible. Focus gets its own reserved
+     colour and a solid offset ring, so "where am I" never depends on
+     spotting a brightness difference. */
+  --focus-ring:   #ffe14d;
+  --focus-width:  2px;
 }
 
 * { box-sizing: border-box; }
+
+/* Available to screen readers, invisible on screen. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Keyboard focus, everywhere, on top of whatever the component does.
+   :focus-visible keeps it off mouse clicks, so the neon aesthetic is
+   untouched for pointer users. */
+:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* Some components paint their own background right up to the edge; the
+   offset ring would be clipped by an ancestor's overflow, so pull it in. */
+.tabs button:focus-visible,
+.day-modal-body :focus-visible { outline-offset: -2px; }
+
+/* Motion is decoration here — every transition is a colour or glow change,
+   so removing them costs nothing but flicker-free comfort for anyone who
+   asked the OS for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 html { color-scheme: dark; }
 
@@ -295,13 +341,22 @@ input[type="password"], select, textarea {
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 9px 12px;
-  outline: none;
   transition: border-color var(--duration-micro), box-shadow var(--duration-micro);
 }
 input::placeholder, textarea::placeholder { color: var(--fg-muted); }
 input:focus, select:focus, textarea:focus {
   border-color: var(--neon-cyan);
   box-shadow: 0 0 8px rgba(0,245,255,0.3);
+}
+/* Pointer focus keeps the cyan-glow treatment on its own; keyboard focus
+   also gets the ring (scoped here so the typed input selectors above don't
+   outrank the global :focus-visible rule). */
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) { outline: none; }
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: 2px;
 }
 select { cursor: pointer; }
 textarea { width: 100%; resize: vertical; font-size: 14px; }
@@ -352,7 +407,6 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
 .day-card:hover, .day-card:focus-visible {
   border-color: var(--neon-cyan);
   box-shadow: var(--glow-card-cyan);
-  outline: none;
 }
 .day-card.type-easy { border-left-color: var(--neon-cyan); }
 .day-card.type-workout { border-left-color: var(--neon-purple); }
@@ -517,7 +571,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
   font-size: 0.95rem;
   transition: background var(--duration-micro);
 }
-.sched-row:hover, .sched-row:focus-visible { background: var(--bg-elevated); outline: none; }
+.sched-row:hover, .sched-row:focus-visible { background: var(--bg-elevated); }
 .sched-row.is-today { background: rgba(0, 245, 255, 0.06); border-left: 2px solid var(--neon-cyan); padding-left: 10px; }
 .sched-row.is-past:not(.is-today) { opacity: 0.6; }
 .sched-date {
@@ -876,6 +930,19 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
   resize: vertical;
   min-height: 56px;
 }
+.builder-day { display: flex; flex-direction: column; gap: 4px; }
+.builder-type {
+  font-size: 11px;
+  padding: 4px 6px;
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+/* A pinned type overrides detection, so it has to look deliberate rather
+   than like the default the runner scrolled past. */
+.builder-type.is-pinned {
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
+}
 
 .summary-h2 { display: inline; font-size: 14px; margin: 0; }
 #new-schedule-details summary { cursor: pointer; }
@@ -1133,6 +1200,8 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   /* 16px minimum stops iOS Safari zooming the page on focus */
   input[type="date"], input[type="text"], input[type="number"], input[type="email"],
   input[type="password"], select, textarea { font-size: 16px; }
+  /* class selector, so it isn't outranked by .builder-type above */
+  .builder-type { font-size: 16px; }
 
   /* the plan text is the thing you actually read on a workout */
   .workout-details p { font-size: 1rem; }
@@ -1185,6 +1254,15 @@ dialog hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .conflict-loser { color: var(--neon-yellow); }
 
 /* ---------- race week ---------- */
+
+/* The Today-tab pointer at the race plan. Same magenta as the plan itself,
+   so the connection between the two reads without a label. */
+.race-banner {
+  border-color: var(--neon-magenta);
+  box-shadow: 0 0 8px rgba(255, 0, 170, 0.2);
+}
+.race-banner h2 { color: var(--neon-magenta); }
+.race-banner a { color: var(--neon-magenta); }
 
 .race-week {
   background: var(--bg-card);

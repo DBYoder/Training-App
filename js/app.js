@@ -644,6 +644,18 @@ function esc(s) {
   return div.innerHTML;
 }
 
+/* Speak a status change to assistive tech. The visible message still lives
+ * next to the control that caused it; this mirrors it into the page's one
+ * persistent live region, because the panels themselves are replaced
+ * wholesale on render and a region born with its text never announces.
+ * Re-announcing identical text needs a clear first, or it's a no-op. */
+function announce(message) {
+  const region = $("#a11y-status");
+  if (!region) return;
+  if (region.textContent === message) region.textContent = "";
+  window.setTimeout(() => { region.textContent = message; }, 50);
+}
+
 function detailHTML(plan, text) {
   return plan.htmlDetails ? text : esc(text);
 }
@@ -659,6 +671,12 @@ function render() {
     return;
   }
   renderCountdownChip();
+  // The Race tab only means something for a schedule anchored to a race;
+  // a start-date block has no race day to plan for.
+  const raceInfo = activeInfo();
+  const hasRace = Boolean(raceInfo && raceInfo.isRaceGoal);
+  $("#tabbtn-race").hidden = !hasRace;
+  if (activeTab === "race" && !hasRace) activeTab = "today";
   $$("#tabs button").forEach((b) => {
     const selected = b.dataset.tab === activeTab;
     b.classList.toggle("active", selected);
@@ -668,6 +686,7 @@ function render() {
   if (activeTab === "today") renderToday();
   if (activeTab === "schedule") renderScheduleTab();
   if (activeTab === "progress") renderProgress();
+  if (activeTab === "race") renderRace();
   if (activeTab === "plans") renderPlans();
   if (activeTab === "settings") renderSettings();
 }
@@ -1180,16 +1199,41 @@ function saveChecklist(schedId, items) {
   saveState();
 }
 
-function raceWeekHTML(info) {
-  if (!info.isRaceGoal) return "";
+/* The race plan, as its own page.
+ *
+ * This used to appear only inside the final seven days, on the Today tab —
+ * which is the one week you can no longer act on what it tells you. Splits,
+ * fuelling and the checklist are decisions to make and rehearse during
+ * training, so the page is available for the whole block and only changes
+ * its framing as the race gets close. */
+function raceHTML(info) {
+  if (!info.isRaceGoal) {
+    return `<div class="notice">
+      <h2>No goal race</h2>
+      <p><strong>${esc(info.sched.name)}</strong> runs forward from a start date
+      rather than backward from a race, so there's no race day to plan for.
+      Create a race-anchored schedule in Settings → New schedule to use this tab.</p>
+    </div>`;
+  }
   const raceIdx = info.len - 1;
   const daysOut = raceIdx - info.todayIdx;
-  if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
 
   const planFuel = raceFuelling(info.days[raceIdx]);
   const plan = racePlan();
   const items = checklistFor(info.sched.id, { seed: true });
-  const when = daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const when = daysOut < 0
+    ? "Run"
+    : daysOut === 0 ? "Today" : `In ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const heading = daysOut < 0
+    ? `🏁 ${esc(info.sched.name)} — done`
+    : daysOut <= RACE_WEEK_DAYS
+      ? `🏁 Race week — ${when}`
+      : `🏁 Race day — ${when}, ${FMT_LONG.format(info.end)}`;
+  // Far out, the point is to rehearse; close in, it's the actual plan.
+  const framing = daysOut > RACE_WEEK_DAYS
+    ? `<p class="hint">Nothing here is locked in. Work it out now and rehearse it on
+       your long runs — race week is a bad time to be deciding how much you'll drink.</p>`
+    : "";
 
   const splitRows = plan ? `
     <p class="hint">Target ${PaceEngine.formatClock(Math.round(plan.target))} —
@@ -1237,7 +1281,8 @@ function raceWeekHTML(info) {
 
   return `
     <details class="race-week" id="race-week" open>
-      <summary><span class="race-week-title">🏁 Race week — ${when}</span></summary>
+      <summary><span class="race-week-title">${heading}</span></summary>
+      ${framing}
       ${splitRows}
       ${fuelBlock}
       <h3 class="checklist-title">// my checklist</h3>
@@ -1255,12 +1300,42 @@ function raceWeekHTML(info) {
       ${items.length ? "" : '<p class="hint">Your checklist is empty — add what matters to you.</p>'}
       <div class="inline-controls checklist-add">
         <input type="text" id="checklist-new" maxlength="${MAX_CHECKLIST_TEXT}"
+               aria-label="New checklist item"
                placeholder="add your own — e.g. drop bag at gear check">
         <button type="button" id="checklist-add" class="btn">Add</button>
       </div>
       <p class="hint">These are yours: edit the list however you like. It syncs
       with your account and is kept per schedule.</p>
     </details>`;
+}
+
+function renderRace() {
+  const el = $("#tab-race");
+  const info = activeInfo();
+  if (!info) {
+    el.innerHTML = `<div class="notice"><h2>No schedule yet</h2>
+      <p>Create one in Settings → New schedule and your race plan lives here.</p></div>`;
+    return;
+  }
+  el.innerHTML = raceHTML(info);
+  wireRaceWeek(el, info);
+}
+
+/* A pointer, not a copy: during race week Today says the plan is ready and
+ * where it lives, so the two tabs never show the same editable fields. */
+function raceWeekBannerHTML(info) {
+  if (!info.isRaceGoal) return "";
+  const daysOut = (info.len - 1) - info.todayIdx;
+  if (daysOut < 0 || daysOut > RACE_WEEK_DAYS) return "";
+  const when = daysOut === 0 ? "today" : `in ${daysOut} day${daysOut === 1 ? "" : "s"}`;
+  const done = checklistFor(info.sched.id).filter((i) => i.done).length;
+  const total = checklistFor(info.sched.id).length;
+  return `
+    <div class="notice race-banner">
+      <h2>🏁 Race week — ${when}</h2>
+      <p>Your splits, fuelling and checklist${total ? ` (${done}/${total} ticked)` : ""}
+      are on the <a href="#" class="goto-race">Race tab</a>.</p>
+    </div>`;
 }
 
 function wireRaceWeek(el, info) {
@@ -1513,7 +1588,7 @@ function renderToday() {
     wireConflicts(el);
   } else {
     const isRaceDay = info.days[ti].type === "race";
-    const parts = [conflictsHTML(), raceWeekHTML(info),
+    const parts = [conflictsHTML(), raceWeekBannerHTML(info),
       dayCard(info, ti, { heading: isRaceDay ? "IT'S RACE DAY" : "Today's workout" })];
     if (!state.profile) {
       parts.push(`<p class="hint pace-tip">tip: add a recent race result in
@@ -1529,7 +1604,14 @@ function renderToday() {
     }
     el.innerHTML = parts.join("");
     wireConflicts(el);
-    wireRaceWeek(el, info);
+    const toRace = $(".goto-race", el);
+    if (toRace) {
+      toRace.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        activeTab = "race";
+        render();
+      });
+    }
     const tip = $(".goto-pace-settings", el);
     if (tip) {
       tip.addEventListener("click", (ev) => {
@@ -2042,9 +2124,10 @@ function renderPlans() {
       <div class="inline-controls">
         <label class="btn" for="plan-file">Choose file…</label>
         <input type="file" id="plan-file" accept=".pdf,.md,.markdown,.json,.txt" hidden>
-        <span class="hint">or paste the plan text below</span>
+        <span class="hint" id="plan-paste-hint">or paste the plan text below</span>
       </div>
-      <textarea id="plan-paste" rows="4" placeholder="| | Mon | Tue | … |&#10;| --- | --- | --- | … |&#10;| Week 1 | Rest | 5 mi easy | … |"></textarea>
+      <textarea id="plan-paste" rows="4" aria-labelledby="plan-paste-hint"
+        placeholder="| | Mon | Tue | … |&#10;| --- | --- | --- | … |&#10;| Week 1 | Rest | 5 mi easy | … |"></textarea>
       <div class="inline-controls">
         <button id="add-plan" class="btn primary">Add plan</button>
         <span id="plan-upload-msg" class="hint"></span>
@@ -2064,17 +2147,19 @@ function renderPlans() {
     </div>`;
 
   const msg = $("#plan-upload-msg");
-  const announce = (plan) => {
+  const planAdded = (plan) => {
     pendingPlanId = plan.id;
     render();
     const addedMsg = $("#plan-upload-msg");
     addedMsg.textContent = `Added “${plainPlanName(plan.name)}” — use “Use this plan” below to schedule it.`;
     addedMsg.classList.remove("sync-error");
+    announce(addedMsg.textContent);
   };
   const showUploadError = (e) => {
     const el = $("#plan-upload-msg");
     el.textContent = e.message || "Couldn't read that file.";
     el.classList.add("sync-error");
+    announce(el.textContent);
   };
 
   $("#plan-file").addEventListener("change", async (ev) => {
@@ -2083,7 +2168,7 @@ function renderPlans() {
       msg.classList.remove("sync-error");
       msg.textContent = "Reading…";
       try {
-        announce(await importPlanFile(file));
+        planAdded(await importPlanFile(file));
       } catch (e) {
         showUploadError(e);
       }
@@ -2098,7 +2183,7 @@ function renderPlans() {
       return;
     }
     try {
-      announce(storeParsedPlan(PlanParser.parsePlanFile("pasted plan", text)));
+      planAdded(storeParsedPlan(PlanParser.parsePlanFile("pasted plan", text)));
     } catch (e) {
       showUploadError(e);
     }
@@ -2146,6 +2231,7 @@ function renderPlans() {
       if (!email) {
         msgEl.textContent = "Enter an email address.";
         msgEl.classList.add("sync-error");
+        announce(msgEl.textContent);
         return;
       }
       msgEl.textContent = "Sending…";
@@ -2174,6 +2260,7 @@ function renderPlans() {
         msgEl.textContent = "Can't reach the server.";
         msgEl.classList.add("sync-error");
       }
+      announce(msgEl.textContent);
     });
   }
   $$(".export-md", el).forEach((b) => {
@@ -2294,16 +2381,50 @@ function openBuilder(plan) {
         rows: plan.sourceCells
           ? plan.sourceCells.map((r) => r.slice())
           : plan.weeks.map((w) => w.days.map((d) => (d.type === "rest" && d.details.join() === "Rest." ? "" : dayCellText(d)))),
+        types: null,   // filled in below, once rows are known
         editingPlanId: plan.id,
       }
     : {
         name: "",
         dayHeaders: DEFAULT_HEADERS.slice(),
         rows: [Array(7).fill("")],
+        types: [Array(7).fill(null)],
         editingPlanId: null,
       };
+  if (plan) builder.types = seedBuilderTypes(plan);
   activeTab = "plans";
   render();
+}
+
+/* Which day types to show as pinned when an existing plan is opened.
+ *
+ * Types the runner pinned before come back as pins. For a plan that carries
+ * no pin record — an upload, or a plan shared from another account — a type
+ * is pinned only where it disagrees with what the text would classify as.
+ * That keeps a correction (made here, in the source file's JSON, or by
+ * whoever shared it) from being silently re-detected away on the next save,
+ * while leaving every ordinary day on auto so edits are still re-read. */
+function seedBuilderTypes(plan) {
+  if (plan.sourceTypes) return plan.sourceTypes.map((r) => r.slice());
+  const lastW = builder.rows.length - 1;
+  return builder.rows.map((row, wi) => row.map((text, di) => {
+    const stored = plan.weeks[wi]?.days[di]?.type;
+    if (!stored) return null;
+    const raw = String(text || "").trim();
+    const auto = raw
+      ? PlanParser.classifyDay(raw, wi === lastW && di === row.length - 1)
+      : "rest";
+    return stored === auto ? null : stored;
+  }));
+}
+
+/* What the parser would call this cell if left on auto — shown in the
+ * dropdown so a wrong guess is visible before the plan is saved. */
+function detectedType(wi, di) {
+  const text = String(builder.rows[wi]?.[di] || "").trim();
+  if (!text) return "rest";
+  const isLastDay = wi === builder.rows.length - 1 && di === builder.dayHeaders.length - 1;
+  return PlanParser.classifyDay(text, isLastDay);
 }
 
 function renderBuilder(el) {
@@ -2312,11 +2433,24 @@ function renderBuilder(el) {
     <fieldset class="builder-week">
       <legend>week ${wi + 1}</legend>
       <div class="builder-grid">
-        ${builder.dayHeaders.map((h, di) => `
-          <label>${h}
-            <textarea rows="3" data-w="${wi}" data-d="${di}"
-              placeholder="rest">${esc(row[di] || "")}</textarea>
-          </label>`).join("")}
+        ${builder.dayHeaders.map((h, di) => {
+          const pinned = builder.types?.[wi]?.[di] || "";
+          const auto = detectedType(wi, di);
+          return `
+          <div class="builder-day">
+            <label>${h}
+              <textarea rows="3" data-w="${wi}" data-d="${di}"
+                placeholder="rest">${esc(row[di] || "")}</textarea>
+            </label>
+            <select class="builder-type ${pinned ? "is-pinned" : ""}"
+                    data-w="${wi}" data-d="${di}"
+                    aria-label="Day type for week ${wi + 1}, ${esc(h)}">
+              <option value="" ${pinned ? "" : "selected"}>auto: ${TYPE_LABELS[auto]}</option>
+              ${PlanParser.DAY_TYPES.map((t) =>
+                `<option value="${t}" ${pinned === t ? "selected" : ""}>${TYPE_LABELS[t]}</option>`).join("")}
+            </select>
+          </div>`;
+        }).join("")}
       </div>
     </fieldset>`;
 
@@ -2338,6 +2472,8 @@ function renderBuilder(el) {
       </div>
       <p class="hint">Leave a day blank for a rest day. Day types are detected from the
       text — “6 x 800 at 10k effort” reads as a workout, “Long run: 16 mi” as a long run.
+      The dropdown under each day shows what was detected; pick a type to pin it if the
+      guess is wrong, and it stays pinned however you edit the text.
       Links like [name](https://…) stay clickable.</p>
       <div class="inline-controls">
         <button id="builder-save" class="btn primary">Save plan</button>
@@ -2348,7 +2484,18 @@ function renderBuilder(el) {
   // oninput (not addEventListener) so re-renders replace rather than stack
   el.oninput = (ev) => {
     if (ev.target.matches(".builder-week textarea")) {
-      builder.rows[Number(ev.target.dataset.w)][Number(ev.target.dataset.d)] = ev.target.value;
+      const wi = Number(ev.target.dataset.w);
+      const di = Number(ev.target.dataset.d);
+      builder.rows[wi][di] = ev.target.value;
+      // keep the "auto:" label honest as the text changes, without a
+      // re-render that would take the cursor out of the textarea
+      const sel = $(`.builder-type[data-w="${wi}"][data-d="${di}"]`, el);
+      if (sel) sel.options[0].textContent = `auto: ${TYPE_LABELS[detectedType(wi, di)]}`;
+    } else if (ev.target.matches(".builder-type")) {
+      const wi = Number(ev.target.dataset.w);
+      const di = Number(ev.target.dataset.d);
+      builder.types[wi][di] = ev.target.value || null;
+      ev.target.classList.toggle("is-pinned", Boolean(ev.target.value));
     } else if (ev.target.id === "builder-name") {
       builder.name = ev.target.value;
     }
@@ -2360,10 +2507,12 @@ function renderBuilder(el) {
   });
   $("#builder-add-week", el).addEventListener("click", () => {
     builder.rows.push(Array(dpw).fill(""));
+    builder.types.push(Array(dpw).fill(null));
     render();
   });
   $("#builder-dup-week", el).addEventListener("click", () => {
     builder.rows.push(builder.rows[builder.rows.length - 1].slice());
+    builder.types.push(builder.types[builder.types.length - 1].slice());
     render();
   });
   const delBtn = $("#builder-del-week", el);
@@ -2372,6 +2521,7 @@ function renderBuilder(el) {
       const last = builder.rows[builder.rows.length - 1];
       if (last.some((c) => c.trim()) && !confirm("The last week has workouts in it — remove it anyway?")) return;
       builder.rows.pop();
+      builder.types.pop();
       render();
     });
   }
@@ -2380,8 +2530,10 @@ function renderBuilder(el) {
     const msg = $("#builder-msg");
     msg.classList.remove("sync-error");
     try {
-      const parsed = PlanParser.buildPlan(builder.name, builder.rows, builder.dayHeaders);
+      const parsed = PlanParser.buildPlan(
+        builder.name, builder.rows, builder.dayHeaders, builder.types);
       const sourceCells = builder.rows.map((r) => r.slice());
+      const sourceTypes = builder.types.map((r) => r.slice());
       if (builder.editingPlanId) {
         const inUse = liveSchedules().filter((s) => s.planId === builder.editingPlanId);
         if (inUse.length &&
@@ -2393,13 +2545,14 @@ function renderBuilder(el) {
           id: builder.editingPlanId,
           ...parsed,
           sourceCells,
+          sourceTypes,
           createdAt: existing?.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
         pendingPlanId = builder.editingPlanId;
         saveState();
       } else {
-        pendingPlanId = storeParsedPlan({ ...parsed, sourceCells }).id;
+        pendingPlanId = storeParsedPlan({ ...parsed, sourceCells, sourceTypes }).id;
       }
       builder = null;
       render();
@@ -2521,6 +2674,8 @@ function renderSettings() {
     $("#account-sync-status").textContent = "Syncing…";
     await doSync();
     render();
+    const after = $("#account-sync-status");
+    if (after) announce(after.textContent);
   });
   $("#logout").addEventListener("click", logout);
   const resend = $("#resend-verify");
@@ -2639,6 +2794,7 @@ function renderSettings() {
         msg.textContent = data.error === "wrong_password"
           ? "That password isn't right." : "Couldn't delete the account — try again.";
         msg.classList.add("sync-error");
+        announce(msg.textContent);
         return;
       }
       // nothing left to sync; drop every local trace of this account
@@ -2746,13 +2902,15 @@ function paceCardHTML() {
       you are, not where you hope to be.</p>
       ${summary}
       <div class="inline-controls">
-        <select id="pace-dist">
+        <select id="pace-dist" aria-label="Race distance">
           ${["5k", "10k", "half", "marathon"].map((d) =>
             `<option value="${d}" ${p?.raceDist === d ? "selected" : ""}>${d === "half" ? "half marathon" : d}</option>`).join("")}
         </select>
-        <input type="text" id="pace-time" placeholder="race time (19:57 or 1:31:35)"
+        <input type="text" id="pace-time" aria-label="Recent race time"
+               placeholder="race time (19:57 or 1:31:35)"
                value="${esc(p?.raceTime || "")}">
-        <input type="text" id="pace-goal" placeholder="goal marathon (optional)"
+        <input type="text" id="pace-goal" aria-label="Goal marathon time (optional)"
+               placeholder="goal marathon (optional)"
                value="${esc(p?.goalTime || "")}">
         <button id="pace-save" class="btn primary">Save</button>
         <span id="pace-msg" class="hint"></span>
@@ -3134,6 +3292,7 @@ function openDay(i) {
     const confirmEl = $("#save-confirm");
     confirmEl.hidden = false;
     setTimeout(() => { confirmEl.hidden = true; }, 1500);
+    announce(hasContent ? "Journal entry saved" : "Journal entry cleared");
     render();
   });
 
